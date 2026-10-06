@@ -92,6 +92,7 @@ export class Simulation {
     this.ticks = 0;
     this.samples = [];
     this.logs = [];
+    this.drainedLogs = 0;
     this.droppedLogs = 0;
     this.custom = {};
     this.stopReason = null;
@@ -222,6 +223,14 @@ export class Simulation {
       /* until done */
     }
     return this.end();
+  }
+
+  /** Log lines written since the last drain (for a live console). */
+  private drainedLogs = 0;
+  drainLogs(): string[] {
+    const out = this.logs.slice(this.drainedLogs);
+    this.drainedLogs = this.logs.length;
+    return out;
   }
 
   /** Current poses for a renderer (7 floats per body, the engine's body order). */

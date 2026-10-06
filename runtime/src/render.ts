@@ -29,6 +29,8 @@ export class Renderer {
   private floor: THREE.Mesh | null = null;
   private grid: THREE.GridHelper | null = null;
   private captureRt: THREE.WebGLRenderTarget | null = null;
+  private highlighted: string | null = null;
+  private readonly raycaster = new THREE.Raycaster();
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, width: number, height: number, dpr = 1) {
     this.renderer = new THREE.WebGLRenderer({ canvas: canvas as HTMLCanvasElement, antialias: true, preserveDrawingBuffer: true });
@@ -164,6 +166,54 @@ export class Renderer {
       g.position.set(poses[i * 7], poses[i * 7 + 1], poses[i * 7 + 2]);
       g.quaternion.set(poses[i * 7 + 4], poses[i * 7 + 5], poses[i * 7 + 6], poses[i * 7 + 3]);
     }
+  }
+
+  /** Tint one body (the selection) and untint the previous one. */
+  highlight(name: string | null): void {
+    const set = (n: string | null, on: boolean) => {
+      const g = n ? this.groups.get(n) : null;
+      if (!g) return;
+      g.traverse((o) => {
+        const m = (o as THREE.Mesh).material as THREE.MeshStandardMaterial | undefined;
+        if (m && m.emissive) {
+          m.emissive.set(on ? 0xffb02e : 0x000000);
+          m.emissiveIntensity = on ? 0.35 : 0;
+        }
+      });
+    };
+    set(this.highlighted, false);
+    this.highlighted = name;
+    set(name, true);
+  }
+
+  /** The body under a viewport point (0..1 from the top-left), or null. */
+  pick(x: number, y: number): string | null {
+    this.raycaster.setFromCamera(new THREE.Vector2(x * 2 - 1, -(y * 2 - 1)), this.camera);
+    const hits = this.raycaster.intersectObjects([...this.groups.values()], true);
+    for (const h of hits) {
+      let o: THREE.Object3D | null = h.object;
+      while (o && !(o instanceof THREE.Group && this.groups.has(o.name))) o = o.parent;
+      if (o) return o.name;
+    }
+    return null;
+  }
+
+  /** A named view of the whole scene. */
+  preset(view: "top" | "front" | "side" | "iso"): void {
+    const box = this.sceneBounds();
+    if (box.isEmpty()) return;
+    const c = box.getCenter(new THREE.Vector3());
+    const r = Math.max(0.02, box.getSize(new THREE.Vector3()).length() / 2);
+    const d = (r * 2.4) / Math.min(1, this.camera.aspect || 1);
+    const o = this.orbit;
+    o.follow = null;
+    o.target.copy(c);
+    o.distance = d;
+    if (view === "top") { o.azimuth = -Math.PI / 2; o.elevation = 1.45; }
+    else if (view === "front") { o.azimuth = -Math.PI / 2; o.elevation = 0.12; }
+    else if (view === "side") { o.azimuth = 0; o.elevation = 0.12; }
+    else { o.azimuth = -0.7; o.elevation = 0.45; }
+    this.applyOrbit(true);
   }
 
   bodyPosition(name: string): THREE.Vector3 | null {

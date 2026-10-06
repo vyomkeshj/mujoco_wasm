@@ -91,6 +91,19 @@ export class Host {
         return this.probe(a);
       case "camera":
         return this.camera(a as CameraArgs & { rotate?: { dx: number; dy: number }; zoom?: number });
+      case "select": {
+        const { renderer } = this.need();
+        const ref = typeof a.ref === "string" ? a.ref : null;
+        const name = ref ? this.bodyNameOf(ref) : null;
+        renderer.highlight(name);
+        this.renderNow();
+        return { selected: name ? ref : null };
+      }
+      case "pick": {
+        const { renderer } = this.need();
+        const name = renderer.pick(Number(a.x ?? 0.5), Number(a.y ?? 0.5));
+        return { ref: name ? this.compiled?.bodies.find((b) => b.name === name)?.ref ?? name : null };
+      }
       case "world":
         return this.describeWorld(!!a.mjcf);
       case "dispose":
@@ -151,8 +164,10 @@ export class Host {
     this.playing = false;
     this.run = null;
     this.notifyState();
+    const bb = this.renderer.sceneBounds();
     return {
       ...report,
+      bounds: bb.isEmpty() ? null : { min: [bb.min.x, bb.min.y, bb.min.z], max: [bb.max.x, bb.max.y, bb.max.z] },
       warnings: compiled.warnings,
       machines: [...new Set(compiled.bodies.map((b) => b.machine).filter(Boolean))],
       actuatorRefs: compiled.actuators.map((x) => ({ ref: x.ref, kind: x.kind, maxTorque: x.maxTorque, maxSpeed: x.maxSpeed })),
@@ -219,6 +234,8 @@ export class Host {
     if (now() - run.lastProgress > 250) {
       run.lastProgress = now();
       this.o.post({ [TAG]: 1, type: "progress", runId: run.spec.runId, t, duration: run.spec.duration, rtf });
+      const lines = run.sim.drainLogs();
+      if (lines.length) this.o.post({ [TAG]: 1, type: "logs", runId: run.spec.runId, lines });
     }
   }
 
@@ -330,6 +347,13 @@ export class Host {
       else r.rotate(ev.dx ?? 0, ev.dy ?? 0);
     } else if (ev.type === "wheel") r.zoom(ev.deltaY ?? 0);
     else if (ev.type === "fit") r.fit();
+    else if (ev.type === "pick") {
+      const e = ev as { x?: number; y?: number };
+      const name = r.pick(e.x ?? 0.5, e.y ?? 0.5);
+      const ref = name ? this.compiled?.bodies.find((b) => b.name === name)?.ref ?? name : null;
+      r.highlight(name);
+      this.o.post({ [TAG]: 1, type: "picked", ref, x: e.x ?? 0.5, y: e.y ?? 0.5 });
+    }
     this.renderNow();
   }
 
@@ -499,7 +523,9 @@ export class Host {
     }
     const refOf = (n: string) => compiled.bodies.find((b) => b.name === n)?.ref ?? n;
     const contacts = a.contacts === false ? [] : engine.contacts().slice(0, 50).map((c) => ({ a: refOf(c.a), b: refOf(c.b), dist: r4(c.dist) }));
-    return { t: r4(sim.time), playing: this.playing, runId: this.run?.spec.runId ?? null, bodies, joints, contacts };
+    const bb = this.renderer?.sceneBounds();
+    const bounds = bb && !bb.isEmpty() ? { min: [bb.min.x, bb.min.y, bb.min.z].map(r4), max: [bb.max.x, bb.max.y, bb.max.z].map(r4) } : null;
+    return { t: r4(sim.time), playing: this.playing, runId: this.run?.spec.runId ?? null, bodies, joints, contacts, bounds };
   }
 
   private camera(a: CameraArgs & { rotate?: { dx: number; dy: number }; zoom?: number }) {
@@ -507,6 +533,7 @@ export class Host {
     if (a.rotate) renderer.rotate(a.rotate.dx, a.rotate.dy);
     if (a.zoom) renderer.zoom(a.zoom);
     if (a.kind === "fit") renderer.fit();
+    if (a.kind === "preset") renderer.preset(a.view ?? "iso");
     if (a.kind === "lookAt" && a.eye && a.lookAt) renderer.lookAt(a.eye, a.lookAt);
     if (a.kind === "follow") renderer.follow(a.target ? this.bodyNameOf(a.target) : null);
     if (a.distance) renderer.orbit.distance = a.distance;

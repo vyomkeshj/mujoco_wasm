@@ -7,5 +7,5 @@ export { MujocoEngine, RecordedEngine, loadMujocoModule, encodeTrajectory, decod
 export { compileProgram, seededRandom, findColor, type CameraImage, type ColorQuery, type ProgramHooks } from "./program";
 export { MetricTracker } from "./metrics";
 export { Simulation, type CameraRenderer, type SimOptions } from "./sim";
-export const RUNTIME_VERSION = 2;
+export const RUNTIME_VERSION = 3;
 export const RUNTIME_NAME = "runmachine";

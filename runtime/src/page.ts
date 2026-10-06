@@ -91,16 +91,21 @@ window.addEventListener("message", (ev: MessageEvent) => {
 });
 
 // pointer input → the orbit camera
-let dragging = false, lastX = 0, lastY = 0, buttons = 0;
-canvas.addEventListener("pointerdown", (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; buttons = e.buttons; canvas.setPointerCapture(e.pointerId); });
+let dragging = false, lastX = 0, lastY = 0, buttons = 0, moved = 0, downX = 0, downY = 0;
+canvas.addEventListener("pointerdown", (e) => { dragging = true; moved = 0; lastX = downX = e.clientX; lastY = downY = e.clientY; buttons = e.buttons; canvas.setPointerCapture(e.pointerId); });
 canvas.addEventListener("pointermove", (e) => {
   if (!dragging) return;
+  moved += Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY);
   transport.input({ type: "drag", dx: e.clientX - lastX, dy: e.clientY - lastY, buttons, shift: e.shiftKey });
   lastX = e.clientX;
   lastY = e.clientY;
 });
 const endDrag = () => { dragging = false; };
-canvas.addEventListener("pointerup", endDrag);
+canvas.addEventListener("pointerup", (e) => {
+  endDrag();
+  // a click, not a drag: pick what is under it
+  if (moved < 4 && e.button === 0) transport.input({ type: "pick", x: downX / Math.max(1, innerWidth), y: downY / Math.max(1, innerHeight) });
+});
 canvas.addEventListener("pointercancel", endDrag);
 canvas.addEventListener("wheel", (e) => { e.preventDefault(); transport.input({ type: "wheel", deltaY: e.deltaY }); }, { passive: false });
 canvas.addEventListener("dblclick", () => transport.input({ type: "fit" }));
