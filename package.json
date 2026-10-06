@@ -8,7 +8,10 @@
   },
   "scripts": {
     "build": "esbuild ./src/main.js --bundle --sourcemap --format=esm --outdir=./build --platform=node",
-    "test": "node test_load.mjs"
+    "test": "node test_load.mjs",
+    "build:runtime": "node runtime/build.mjs",
+    "test:runtime": "node --test runtime/test/",
+    "typecheck:runtime": "tsc -p runtime/tsconfig.json"
   },
   "repository": {
     "type": "git",
@@ -27,6 +30,11 @@
   "dependencies": {
     "@mujoco/mujoco": "^3.12.0",
     "esbuild": "^0.25.12",
-    "three": "^0.181.0"
+    "three": "^0.181.0",
+    "webm-muxer": "^5.1.4"
+  },
+  "devDependencies": {
+    "@types/three": "^0.181.0",
+    "typescript": "^5.9.3"
   }
 }

@@ -56,6 +56,10 @@ jobs:
           mkdir -p build
       - name: Run esbuild
         run: npm run build
+      - name: Build the RunMachine runtime
+        run: NODE_ENV=production npm run build:runtime
+      - name: Test the RunMachine runtime
+        run: npm run test:runtime
       - name: Setup Pages
         uses: actions/configure-pages@v4
       - name: Upload artifact
