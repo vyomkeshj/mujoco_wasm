@@ -224,7 +224,8 @@ export class Renderer {
     const c = box.getCenter(new THREE.Vector3());
     const r = Math.max(0.02, box.getSize(new THREE.Vector3()).length() / 2);
     this.orbit.target.copy(c);
-    this.orbit.distance = r * 2.4;
+    // a portrait viewport sees less sideways: back off by the aspect so the whole scene stays in frame
+    this.orbit.distance = (r * 2.4) / Math.min(1, this.camera.aspect || 1);
     this.applyOrbit();
   }
 

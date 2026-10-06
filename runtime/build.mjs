@@ -10,7 +10,8 @@ mkdirSync(dist, { recursive: true });
 const pkg = JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8"));
 const core = readFileSync(join(here, "src", "core.ts"), "utf8");
 const version = Number(/RUNTIME_VERSION = (\d+)/.exec(core)?.[1] ?? 0);
-const define = { __RUNTIME_VERSION__: String(version), __MUJOCO_VERSION__: JSON.stringify(pkg.dependencies["@mujoco/mujoco"] ?? "") };
+const mujocoVersion = JSON.parse(readFileSync(join(here, "..", "node_modules", "@mujoco", "mujoco", "package.json"), "utf8")).version;
+const define = { __RUNTIME_VERSION__: String(version), __MUJOCO_VERSION__: JSON.stringify(mujocoVersion) };
 
 await build({ entryPoints: [join(here, "src", "core.ts")], bundle: true, format: "esm", platform: "node", target: "node20", outfile: join(dist, "core.mjs"), external: ["@mujoco/mujoco"], define, sourcemap: true, logLevel: "warning" });
 
@@ -21,5 +22,5 @@ if (existsSync(join(here, "src", "page.ts"))) await browser("page.ts", "page.js"
 if (existsSync(join(here, "src", "worker.ts"))) await browser("worker.ts", "worker.js");
 copyFileSync(join(here, "..", "node_modules", "@mujoco", "mujoco", "mujoco.wasm"), join(dist, "mujoco.wasm"));
 if (existsSync(join(here, "index.html"))) copyFileSync(join(here, "index.html"), join(dist, "index.html"));
-writeFileSync(join(dist, "version.json"), JSON.stringify({ runtimeVersion: `runmachine.${version}`, mujoco: pkg.dependencies["@mujoco/mujoco"] ?? "" }));
+writeFileSync(join(dist, "version.json"), JSON.stringify({ runtimeVersion: `runmachine.${version}`, mujoco: mujocoVersion }));
 console.log(`runtime ${version} built → ${dist}`);
