@@ -55,6 +55,8 @@ export class Host {
   private lastFrame = 0;
   private meshCache = new Map<string, Uint8Array>();
   private outputSeq = 0;
+  private replay: { runId: string; engine: RecordedEngine; poses: Float32Array; playing: boolean; speed: number; wallStart: number; simStart: number } | null = null;
+  private watching: { sensor: string; everyMs: number; last: number } | null = null;
 
   constructor(private readonly o: HostOptions) {}
 
@@ -96,8 +98,27 @@ export class Host {
         const ref = typeof a.ref === "string" ? a.ref : null;
         const name = ref ? this.bodyNameOf(ref) : null;
         renderer.highlight(name);
+        if (a.trail !== false) renderer.trail(name);
         this.renderNow();
         return { selected: name ? ref : null };
+      }
+      case "trail": {
+        const { renderer } = this.need();
+        const ref = typeof a.ref === "string" ? a.ref : null;
+        renderer.trail(ref ? this.bodyNameOf(ref) : null);
+        return { trailing: ref };
+      }
+      case "replay":
+        return this.replayControl(a);
+      case "watch": {
+        const { compiled } = this.need();
+        const sensor = typeof a.sensor === "string" ? a.sensor : null;
+        if (!sensor) { this.watching = null; return { watching: null }; }
+        const s = compiled.sensors.find((x) => (x.ref === sensor || x.name === sensor) && x.camera);
+        if (!s) throw new Error(`no camera sensor "${sensor}" (cameras: ${compiled.sensors.filter((x) => x.camera).map((x) => x.ref).join(", ") || "none"})`);
+        this.watching = { sensor: s.name, everyMs: Math.max(100, 1000 / Number(a.fps ?? 8)), last: 0 };
+        void this.postFrame(true);
+        return { watching: s.ref };
       }
       case "pick": {
         const { renderer } = this.need();
@@ -110,7 +131,7 @@ export class Host {
         this.disposeWorld();
         return { ok: true };
       default:
-        throw new Error(`unknown method "${req.method}" (ping, load, run, control, snapshot, film, read, result, probe, camera, world, dispose)`);
+        throw new Error(`unknown method "${req.method}" (ping, load, run, control, snapshot, film, read, result, probe, camera, select, pick, trail, replay, watch, world, dispose)`);
     }
   }
 
@@ -198,6 +219,8 @@ export class Host {
     const realtime = args.realtime ?? !this.o.inWorker ? !!args.realtime : !!args.realtime;
     this.speed = args.speed && args.speed > 0 ? args.speed : 1;
     sim.begin({ runId: args.runId, seed: args.seed, duration: duration > 0 ? duration : Number.POSITIVE_INFINITY, programs: args.programs ?? [], record: args.record });
+    this.replay = null;
+    this.renderer?.clearTrail();
     return new Promise((resolve, reject) => {
       this.run = { spec: args, sim, realtime, resolve, reject, wallStart: now(), simAtStart: 0, lastProgress: 0 };
       this.playing = true;
@@ -323,6 +346,65 @@ export class Host {
     return { playing: this.playing, speed: this.speed, t: this.sim?.time ?? 0 };
   }
 
+  /** A live eye: the watched camera's image, as a small JPEG notice. */
+  private async postFrame(force = false): Promise<void> {
+    const w = this.watching;
+    if (!w || !this.renderer || !this.engine || !this.compiled) return;
+    if (!force && now() - w.last < w.everyMs) return;
+    w.last = now();
+    const s = this.compiled.sensors.find((x) => x.name === w.sensor);
+    if (!s?.camera) return;
+    try {
+      const dataUrl = await this.renderer.cameraJpeg(s.camera, this.engine.cameraPose(s.camera.name));
+      this.o.post({ [TAG]: 1, type: "frame", sensor: s.ref, t: this.sim?.time ?? 0, dataUrl });
+    } catch {
+      /* a frame can be skipped */
+    }
+  }
+
+  /** Scrub or play a finished run's recording in the view (never while a run is live). */
+  private replayControl(a: Record<string, unknown>) {
+    const { compiled, renderer, engine } = this.need();
+    if (this.run) throw new Error("a run is in progress; stop it before replaying");
+    const action = String(a.action ?? "seek");
+    if (action === "stop") {
+      if (this.replay) { this.replay = null; engine.poses(this.poseBuf); renderer.setPoses(engine.bodyNames(), this.poseBuf, false); renderer.clearTrail(); this.renderNow(); }
+      return { replaying: null };
+    }
+    const runId = String(a.runId ?? [...this.results.keys()].pop() ?? "");
+    const rec = this.results.get(runId);
+    if (!rec) throw new Error(`no recording of run "${runId}" in this view (kept: ${[...this.results.keys()].join(", ") || "none"})`);
+    if (!this.replay || this.replay.runId !== runId) {
+      const re = new RecordedEngine(rec.trajectory, compiled.timestep);
+      re.load(compiled);
+      this.replay = { runId, engine: re, poses: new Float32Array(rec.trajectory.bodies.length * 7), playing: false, speed: 1, wallStart: 0, simStart: 0 };
+      renderer.clearTrail();
+    }
+    const rp = this.replay;
+    const duration = rp.engine.duration();
+    if (action === "seek") {
+      rp.playing = false;
+      rp.engine.seek(Math.max(0, Math.min(duration, Number(a.t ?? 0))));
+      this.showReplayFrame();
+    } else if (action === "play") {
+      rp.speed = a.speed && Number(a.speed) > 0 ? Number(a.speed) : 1;
+      rp.simStart = rp.engine.time() >= duration - 1e-6 ? 0 : rp.engine.time();
+      rp.wallStart = now();
+      rp.playing = true;
+      this.schedule();
+    } else if (action === "pause") rp.playing = false;
+    return { replaying: runId, t: rp.engine.time(), duration, playing: rp.playing };
+  }
+
+  private showReplayFrame(): void {
+    const rp = this.replay;
+    if (!rp || !this.renderer) return;
+    rp.engine.poses(rp.poses);
+    this.renderer.setPoses(rp.engine.bodyNames(), rp.poses, true);
+    this.renderer.render();
+    this.o.post({ [TAG]: 1, type: "state", playing: rp.playing, t: rp.engine.time(), runId: `replay:${rp.runId}`, speed: rp.speed });
+  }
+
   private notifyState(): void {
     this.o.post({ [TAG]: 1, type: "state", playing: this.playing, t: this.sim?.time ?? 0, runId: this.run?.spec.runId ?? null, speed: this.speed });
   }
@@ -371,6 +453,17 @@ export class Host {
   }
 
   private frame(t: number): void {
+    const rp = this.replay;
+    if (rp && rp.playing && !this.run) {
+      const target = rp.simStart + ((now() - rp.wallStart) / 1000) * rp.speed;
+      const duration = rp.engine.duration();
+      rp.engine.seek(Math.min(duration, target));
+      if (target >= duration) rp.playing = false;
+      this.showReplayFrame();
+      this.lastFrame = t;
+      if (rp.playing || this.visible) this.schedule();
+      return;
+    }
     const run = this.run;
     if (run && run.realtime && this.playing) {
       const target = ((now() - run.wallStart) / 1000) * this.speed;
@@ -391,6 +484,7 @@ export class Host {
     if (t - this.lastFrame > 12) {
       this.renderNow();
       this.lastFrame = t;
+      if (this.watching && this.run) void this.postFrame();
     }
     if (this.visible || (this.run && this.playing)) this.schedule();
   }
@@ -400,8 +494,9 @@ export class Host {
       this.renderer?.render();
       return;
     }
+    if (this.replay && !this.run) { this.showReplayFrame(); return; }
     this.engine.poses(this.poseBuf);
-    this.renderer.setPoses(this.engine.bodyNames(), this.poseBuf);
+    this.renderer.setPoses(this.engine.bodyNames(), this.poseBuf, !!this.run);
     this.renderer.render();
   }
 

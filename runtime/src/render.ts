@@ -31,6 +31,11 @@ export class Renderer {
   private captureRt: THREE.WebGLRenderTarget | null = null;
   private highlighted: string | null = null;
   private readonly raycaster = new THREE.Raycaster();
+  private trailLine: THREE.Line | null = null;
+  private trailPts = new Float32Array(0);
+  private trailN = 0;
+  private trailBody: string | null = null;
+  private trailLast = new THREE.Vector3(Infinity, Infinity, Infinity);
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, width: number, height: number, dpr = 1) {
     this.renderer = new THREE.WebGLRenderer({ canvas: canvas as HTMLCanvasElement, antialias: true, preserveDrawingBuffer: true });
@@ -159,13 +164,14 @@ export class Renderer {
   }
 
   /** Poses from the engine (7 floats per body) in the engine's body order. */
-  setPoses(bodies: string[], poses: Float32Array): void {
+  setPoses(bodies: string[], poses: Float32Array, trail = true): void {
     for (let i = 0; i < bodies.length; i++) {
       const g = this.groups.get(bodies[i]);
       if (!g) continue;
       g.position.set(poses[i * 7], poses[i * 7 + 1], poses[i * 7 + 2]);
       g.quaternion.set(poses[i * 7 + 4], poses[i * 7 + 5], poses[i * 7 + 6], poses[i * 7 + 3]);
     }
+    if (trail) this.extendTrail();
   }
 
   /** Tint one body (the selection) and untint the previous one. */
@@ -184,6 +190,52 @@ export class Renderer {
     set(this.highlighted, false);
     this.highlighted = name;
     set(name, true);
+  }
+
+  /** Draw the path of one body as it moves (a run, a replay); null clears it. */
+  trail(body: string | null): void {
+    if (this.trailLine) { this.scene.remove(this.trailLine); this.trailLine.geometry.dispose(); (this.trailLine.material as THREE.Material).dispose(); this.trailLine = null; }
+    this.trailBody = body;
+    this.trailN = 0;
+    this.trailLast.set(Infinity, Infinity, Infinity);
+    if (!body) return;
+    const MAX = 6000;
+    this.trailPts = new Float32Array(MAX * 3);
+    const geom = new THREE.BufferGeometry();
+    geom.setAttribute("position", new THREE.BufferAttribute(this.trailPts, 3));
+    geom.setDrawRange(0, 0);
+    const mat = new THREE.LineBasicMaterial({ color: 0xe8a64f, transparent: true, opacity: 0.9, depthTest: false });
+    this.trailLine = new THREE.Line(geom, mat);
+    this.trailLine.renderOrder = 10;
+    this.trailLine.frustumCulled = false;
+    this.scene.add(this.trailLine);
+  }
+
+  clearTrail(): void {
+    this.trailN = 0;
+    this.trailLast.set(Infinity, Infinity, Infinity);
+    if (this.trailLine) this.trailLine.geometry.setDrawRange(0, 0);
+  }
+
+  /** Called after poses change: extends the trail by the trailed body's position (2 mm apart at least). */
+  private extendTrail(): void {
+    if (!this.trailLine || !this.trailBody) return;
+    const p = this.groups.get(this.trailBody)?.position;
+    if (!p) return;
+    if (p.distanceTo(this.trailLast) < 0.002) return;
+    const MAX = this.trailPts.length / 3;
+    if (this.trailN >= MAX) {
+      this.trailPts.copyWithin(0, 3 * 100);
+      this.trailN -= 100;
+    }
+    this.trailPts[this.trailN * 3] = p.x;
+    this.trailPts[this.trailN * 3 + 1] = p.y;
+    this.trailPts[this.trailN * 3 + 2] = p.z + 0.001;
+    this.trailN++;
+    this.trailLast.copy(p);
+    const attr = this.trailLine.geometry.getAttribute("position") as THREE.BufferAttribute;
+    attr.needsUpdate = true;
+    this.trailLine.geometry.setDrawRange(0, this.trailN);
   }
 
   /** The body under a viewport point (0..1 from the top-left), or null. */
@@ -336,6 +388,20 @@ export class Renderer {
     const out = new Uint8ClampedArray(width * height * 4);
     flipRows(buf, out, width, height);
     return out;
+  }
+
+  /** A sensor camera's current image as a JPEG (data URL), for a live eye view. */
+  async cameraJpeg(camera: { name: string; width: number; height: number; fov: number }, pose: CameraPose, quality = 0.7): Promise<string> {
+    const img = this.renderCamera(camera, pose, false);
+    const canvas = new OffscreenCanvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("no 2D context");
+    ctx.putImageData(new ImageData(img.rgba as unknown as Uint8ClampedArray<ArrayBuffer>, img.width, img.height), 0, 0);
+    const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+    const buf = new Uint8Array(await blob.arrayBuffer());
+    let s = "";
+    for (let i = 0; i < buf.length; i += 0x8000) s += String.fromCharCode.apply(null, Array.from(buf.subarray(i, i + 0x8000)));
+    return `data:image/jpeg;base64,${btoa(s)}`;
   }
 
   dispose(): void {

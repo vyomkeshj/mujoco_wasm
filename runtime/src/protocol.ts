@@ -25,7 +25,8 @@ export type Notice =
   | { [TAG]: 1; type: "state"; playing: boolean; t: number; runId: string | null; speed: number }
   | { [TAG]: 1; type: "run-finished"; runId: string; status: string; reason?: string }
   | { [TAG]: 1; type: "picked"; ref: string | null; x: number; y: number }
-  | { [TAG]: 1; type: "logs"; runId: string; lines: string[] };
+  | { [TAG]: 1; type: "logs"; runId: string; lines: string[] }
+  | { [TAG]: 1; type: "frame"; sensor: string; t: number; dataUrl: string };
 
 export function isRequest(m: unknown): m is Request {
   const r = m as Partial<Request> | null;
