@@ -141,6 +141,10 @@ export class Host {
     return { engine: this.engine, compiled: this.compiled, renderer: this.renderer, sim: this.sim };
   }
 
+  /**
+   * A mesh's bytes. Fetches go through a small pool with retries: nine parallel requests to the blob store from one
+   * page left several hanging forever (Chrome, headless and not), while a few at a time always arrive.
+   */
   private async fetchMesh(key: string, src: MeshSource): Promise<Uint8Array> {
     const cached = this.meshCache.get(key);
     if (cached) return cached;
@@ -148,14 +152,25 @@ export class Host {
     if (typeof src === "object" && "base64" in src) bytes = b64decode(src.base64);
     else {
       const url = typeof src === "string" ? src : src.url;
-      const res = await fetch(url, { mode: "cors", credentials: "omit" });
-      if (!res.ok) throw new Error(`mesh "${key}": ${res.status} ${res.statusText} fetching ${url}`);
-      bytes = new Uint8Array(await res.arrayBuffer());
+      bytes = await this.pool.run(async () => {
+        let lastErr: Error | null = null;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            const res = await fetch(url, { mode: "cors", credentials: "omit", cache: "force-cache", signal: AbortSignal.timeout(attempt === 1 ? 12_000 : 20_000) });
+            if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+            return new Uint8Array(await res.arrayBuffer());
+          } catch (err) {
+            lastErr = err as Error;
+          }
+        }
+        throw new Error(`mesh "${key}": ${lastErr?.message ?? "failed"} fetching ${url} (3 attempts)`);
+      });
     }
     this.meshCache.set(key, bytes);
     if (this.meshCache.size > 400) this.meshCache.delete(this.meshCache.keys().next().value as string);
     return bytes;
   }
+  private readonly pool = new Pool(2);
 
   private async load(args: LoadArgs) {
     if (!this.engine || !this.renderer) throw new Error("the runtime is still booting");
@@ -166,13 +181,17 @@ export class Host {
     for (const m of world.machines ?? []) for (const p of m.package?.parts ?? []) for (const b of p.bodies ?? []) if (!b.mesh?.primitive) keys.add(meshKey(b.mesh));
     for (const o of world.objects ?? []) if (o.shape?.kind === "mesh" && !o.shape.mesh?.primitive) keys.add(meshKey(o.shape.mesh));
     const meshes: Record<string, Uint8Array> = {};
+    const t0 = now();
     await Promise.all([...keys].map(async (k) => {
       const src = sources[k];
       if (!src) throw new Error(`mesh "${k}" has no source in meshes (a URL or base64)`);
       meshes[k] = await this.fetchMesh(k, src);
     }));
+    const t1 = now();
     this.stopLoop();
     const compiled = compileWorld({ world, meshes });
+    const t2 = now();
+    console.log(`runmachine load: ${keys.size} mesh(es) in ${(t1 - t0).toFixed(0)} ms, compiled in ${(t2 - t1).toFixed(0)} ms, ${compiled.files.length} file(s), mjcf ${compiled.mjcf.length} chars`);
     const report = this.engine.load(compiled);
     this.compiled = compiled;
     const r = this.renderer;
@@ -651,6 +670,26 @@ export class Host {
       warnings: compiled.warnings,
       mjcf: withMjcf ? compiled.mjcf : undefined,
     };
+  }
+}
+
+/** At most `n` jobs in flight; the rest wait their turn. */
+class Pool {
+  private active = 0;
+  private readonly queue: (() => void)[] = [];
+  constructor(private readonly n: number) {}
+  run<T>(job: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const start = () => {
+        this.active++;
+        job().then(resolve, reject).finally(() => {
+          this.active--;
+          this.queue.shift()?.();
+        });
+      };
+      if (this.active < this.n) start();
+      else this.queue.push(start);
+    });
   }
 }
 
