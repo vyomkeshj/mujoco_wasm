@@ -129,8 +129,8 @@ export class Host {
     if (!world || typeof world !== "object") throw new Error("load needs a world");
     const sources = args.meshes ?? {};
     const keys = new Set<string>();
-    for (const m of world.machines ?? []) for (const p of m.package?.parts ?? []) for (const b of p.bodies ?? []) keys.add(meshKey(b.mesh));
-    for (const o of world.objects ?? []) if (o.shape?.kind === "mesh") keys.add(meshKey(o.shape.mesh));
+    for (const m of world.machines ?? []) for (const p of m.package?.parts ?? []) for (const b of p.bodies ?? []) if (!b.mesh?.primitive) keys.add(meshKey(b.mesh));
+    for (const o of world.objects ?? []) if (o.shape?.kind === "mesh" && !o.shape.mesh?.primitive) keys.add(meshKey(o.shape.mesh));
     const meshes: Record<string, Uint8Array> = {};
     await Promise.all([...keys].map(async (k) => {
       const src = sources[k];

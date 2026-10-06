@@ -7,6 +7,11 @@ export type Quat = [number, number, number, number];
 
 // ------------------------------------------------------------------ the Machine package (machine/1)
 
+export type MeshPrimitive =
+  | { kind: "box"; min: XYZ; max: XYZ }
+  | { kind: "cylinder"; center: XYZ; axis: "x" | "y" | "z"; r: number; length: number }
+  | { kind: "sphere"; center: XYZ; r: number };
+
 export interface MeshRef {
   /** A workspace file id (the CAD export); the app resolves it to a URL before `load`. */
   fileId?: string;
@@ -14,6 +19,8 @@ export interface MeshRef {
   /** A URL the runtime can fetch (resolved by the app), or a key into `meshes` given to the compiler. */
   url?: string;
   key?: string;
+  /** A shape the runtime makes itself (presets, tests) — in the package's units, world frame at the design pose. */
+  primitive?: MeshPrimitive;
 }
 
 export type ColliderKind = "hull" | "box" | "sphere" | "cylinder" | "capsule" | "exact" | "none";

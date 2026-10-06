@@ -130,3 +130,27 @@ export function cylinderMesh(center: XYZ, axis: 0 | 1 | 2, r: number, L: number,
   }
   return Float32Array.from(out);
 }
+
+/** A UV sphere, n segments around, n/2 rings. */
+export function sphereMesh(center: XYZ, r: number, n = 24): Float32Array {
+  const out: number[] = [];
+  const rings = Math.max(3, Math.floor(n / 2));
+  const pt = (i: number, j: number): XYZ => {
+    const phi = (j / rings) * Math.PI, th = (i / n) * Math.PI * 2;
+    return [center[0] + r * Math.sin(phi) * Math.cos(th), center[1] + r * Math.sin(phi) * Math.sin(th), center[2] + r * Math.cos(phi)];
+  };
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < n; i++) {
+      const a = pt(i, j), b = pt(i + 1, j), c = pt(i + 1, j + 1), d = pt(i, j + 1);
+      if (j > 0) out.push(...a, ...d, ...c);
+      if (j < rings - 1) out.push(...a, ...c, ...b);
+    }
+  }
+  return Float32Array.from(out);
+}
+
+export function primitiveMesh(p: { kind: "box"; min: XYZ; max: XYZ } | { kind: "cylinder"; center: XYZ; axis: "x" | "y" | "z"; r: number; length: number } | { kind: "sphere"; center: XYZ; r: number }): Float32Array {
+  if (p.kind === "box") return boxMesh(p.min, p.max);
+  if (p.kind === "cylinder") return cylinderMesh(p.center, p.axis === "x" ? 0 : p.axis === "y" ? 1 : 2, p.r, p.length);
+  return sphereMesh(p.center, p.r);
+}

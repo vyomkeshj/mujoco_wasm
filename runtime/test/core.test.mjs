@@ -117,3 +117,33 @@ test("obstacles collide: a wall stops the car", () => {
   assert.ok(r.metrics.dist.value < 0.3, `stopped by the wall at ${r.metrics.dist.value}`);
   assert.equal(r.metrics.hit.value, true, r.metrics.hit.text);
 });
+
+test("a catapult made of primitives throws a ball", () => {
+  const L = 300, k = 2;
+  const pkg = {
+    version: "machine/1", name: "Catapult", units: "mm",
+    parts: [
+      { id: "base", name: "Base", material: { density: 600 }, bodies: [
+        { nodeId: "bed", name: "Bed", mesh: { primitive: { kind: "box", min: [-120, -60, 0], max: [120, 60, 20] } }, collider: "box" },
+        { nodeId: "postL", name: "Post L", mesh: { primitive: { kind: "box", min: [-100, 40, 20], max: [-80, 60, 120] } }, collider: "box" },
+        { nodeId: "postR", name: "Post R", mesh: { primitive: { kind: "box", min: [-100, -60, 20], max: [-80, -40, 120] } }, collider: "box" },
+        { nodeId: "stop", name: "Stop", mesh: { primitive: { kind: "box", min: [20, -60, 20], max: [40, 60, 140] } }, collider: "box" },
+      ] },
+      { id: "arm", name: "Arm", material: { density: 700 }, bodies: [
+        { nodeId: "beam", name: "Beam", mesh: { primitive: { kind: "box", min: [-90, -8, 92], max: [-90 + L, 8, 108] } }, collider: "box" },
+        { nodeId: "cupFloor", name: "Cup floor", mesh: { primitive: { kind: "box", min: [-90 + L - 50, -30, 108], max: [-90 + L, 30, 112] } }, collider: "box" },
+        { nodeId: "cupBack", name: "Cup back", mesh: { primitive: { kind: "box", min: [-90 + L - 50, -30, 112], max: [-90 + L - 46, 30, 140] } }, collider: "box" },
+      ] },
+    ],
+    joints: [{ id: "pivot", type: "hinge", parent: "base", child: "arm", axis: { point: [-90, 0, 100], dir: [0, 1, 0] }, range: [-100, 10], damping: 0.002, spring: { stiffness: k, rest: -100 } }],
+    motors: [{ id: "latch", joint: "pivot", kind: "position", maxTorque: 6 }],
+    gears: [], sensors: [{ id: "armAngle", type: "encoder", joint: "pivot" }], ground: ["base"],
+  };
+  const world = { version: "world/1", ground: {}, objects: [{ id: "ball", shape: { kind: "sphere", r: 0.02 }, pose: { pos: [-90 / 1000 + L / 1000 - 0.025, 0, 0.14] }, material: { mass: 10, color: "#e03131" } }], machines: [{ id: "cat", package: pkg }], metrics: [{ id: "h", kind: "max_height", target: "ball" }, { id: "d", kind: "distance_from_start", target: "ball" }] };
+  const c = compileWorld({ world, meshes: {} });
+  engine.load(c);
+  const r = new Simulation(engine, c).runAll({ runId: "cat", duration: 3, programs: [{ id: "p", source: `function loop({ t, machine }) { machine.motor("latch").angle(t < 0.8 ? 0 : -100); }` }] });
+  assert.equal(r.status, "finished", r.reason);
+  assert.ok(r.metrics.h.value > 0.3, `ball flew to ${r.metrics.h.value} m: ${r.metrics.d.text}`);
+  assert.ok(r.metrics.d.value > 0.3, r.metrics.d.text);
+});

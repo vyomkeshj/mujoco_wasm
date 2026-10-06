@@ -3,7 +3,7 @@ import type {
   Collider, CompiledActuator, CompiledBody, CompiledJoint, CompiledSensor, CompiledWorld, MachinePackage, MeshData,
   MeshRef, Metric, Part, PlacedMachine, Quat, RenderGeom, Sensor, World, WorldObject, XYZ,
 } from "./types";
-import { encodeStlBinary, meshData, parseStl, transformPositions } from "./stl";
+import { encodeStlBinary, meshData, parseStl, primitiveMesh, transformPositions } from "./stl";
 import * as V from "./vec";
 
 const MM = 0.001;
@@ -18,8 +18,9 @@ export interface CompileInput {
 }
 
 export function meshKey(ref: MeshRef): string {
+  if (ref.primitive) return `primitive:${JSON.stringify(ref.primitive)}`;
   const k = ref.key ?? ref.fileId ?? ref.url;
-  if (!k) throw new Error("a mesh reference needs a key, fileId or url");
+  if (!k) throw new Error("a mesh reference needs a key, fileId, url or primitive");
   return k;
 }
 
@@ -78,6 +79,7 @@ export function compileWorld(input: CompileInput): CompiledWorld {
   const look = { sky: world.look?.sky ?? "#dfe9f3", floor: world.ground?.color ?? world.look?.floor ?? "#cfd6dc", groundSize, ground: groundOn };
 
   const loadMesh = (ref: MeshRef, what: string): MeshData => {
+    if (ref.primitive) return meshData(primitiveMesh(ref.primitive));
     const key = meshKey(ref);
     const src = meshes[key];
     if (!src) throw new Error(`${what}: mesh "${key}" was not given to the compiler`);
