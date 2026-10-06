@@ -6,6 +6,7 @@ import { encodeFilm, webcodecsAvailable } from "./film";
 import type { CameraArgs, FilmArgs, LoadArgs, MeshSource, Notice, OutputInfo, Request, RunArgs } from "./protocol";
 import { TAG } from "./protocol";
 import { Renderer, encodePng } from "./render";
+import { settlePose } from "./settle";
 import { Simulation } from "./sim";
 import type { CompiledWorld, RunResult, Trajectory, World, XYZ } from "./types";
 import { RUNTIME_NAME, RUNTIME_VERSION } from "./core";
@@ -57,6 +58,9 @@ export class Host {
   private outputSeq = 0;
   private replay: { runId: string; engine: RecordedEngine; poses: Float32Array; playing: boolean; speed: number; wallStart: number; simStart: number } | null = null;
   private watching: { sensor: string; everyMs: number; last: number } | null = null;
+  private world: World | null = null;
+  /** the viewport follows a scripted camera (a run's or a replay's) until the viewer grabs the view */
+  private attached = true;
 
   constructor(private readonly o: HostOptions) {}
 
@@ -91,6 +95,8 @@ export class Host {
         return this.resultOf(String(a.runId ?? ""));
       case "probe":
         return this.probe(a);
+      case "settle":
+        return this.settle(a);
       case "camera":
         return this.camera(a as CameraArgs & { rotate?: { dx: number; dy: number }; zoom?: number });
       case "select": {
@@ -131,7 +137,7 @@ export class Host {
         this.disposeWorld();
         return { ok: true };
       default:
-        throw new Error(`unknown method "${req.method}" (ping, load, run, control, snapshot, film, read, result, probe, camera, select, pick, trail, replay, watch, world, dispose)`);
+        throw new Error(`unknown method "${req.method}" (ping, load, run, control, snapshot, film, read, result, probe, settle, camera, select, pick, trail, replay, watch, world, dispose)`);
     }
   }
 
@@ -194,6 +200,8 @@ export class Host {
     console.log(`runmachine load: ${keys.size} mesh(es) in ${(t1 - t0).toFixed(0)} ms, compiled in ${(t2 - t1).toFixed(0)} ms, ${compiled.files.length} file(s), mjcf ${compiled.mjcf.length} chars`);
     const report = this.engine.load(compiled);
     this.compiled = compiled;
+    this.world = world;
+    this.attached = true;
     const r = this.renderer;
     this.sim = new Simulation(this.engine, compiled, { cameraRenderer: { render: (cam, pose, depth) => r.renderCamera(cam, pose, depth) } });
     this.renderer.build(compiled);
@@ -223,8 +231,21 @@ export class Host {
     this.run = null;
     this.sim = null;
     this.compiled = null;
+    this.world = null;
     this.engine?.dispose();
     this.playing = false;
+  }
+
+  /** Let a machine or an object come to rest with no program, answer the placement that lands it there, restore. */
+  private settle(a: Record<string, unknown>) {
+    const { engine, compiled } = this.need();
+    if (this.run) throw new Error(`a run is in progress (${this.run.spec.runId}): stop it before settling`);
+    if (!this.world) throw new Error("no world is loaded: call load first");
+    const seconds = a.seconds === undefined ? 0.5 : Number(a.seconds);
+    if (!(seconds > 0 && seconds <= 30)) throw new Error("settle: seconds must be between 0 and 30");
+    const result = settlePose(engine, compiled, this.world, { machineId: typeof a.machineId === "string" ? a.machineId : undefined, objectId: typeof a.objectId === "string" ? a.objectId : undefined }, seconds);
+    this.renderNow();
+    return result;
   }
 
   // ---------------------------------------------------------------- runs
@@ -237,8 +258,10 @@ export class Host {
     if (!(duration >= 0)) throw new Error("run needs a duration in seconds (0 = until stopped)");
     const realtime = args.realtime ?? !this.o.inWorker ? !!args.realtime : !!args.realtime;
     this.speed = args.speed && args.speed > 0 ? args.speed : 1;
-    sim.begin({ runId: args.runId, seed: args.seed, duration: duration > 0 ? duration : Number.POSITIVE_INFINITY, programs: args.programs ?? [], record: args.record });
+    const start = this.renderer?.cameraPose();
+    sim.begin({ runId: args.runId, seed: args.seed, duration: duration > 0 ? duration : Number.POSITIVE_INFINITY, programs: args.programs ?? [], record: args.record, camera: start });
     this.replay = null;
+    this.attached = true;
     this.renderer?.clearTrail();
     return new Promise((resolve, reject) => {
       this.run = { spec: args, sim, realtime, resolve, reject, wallStart: now(), simAtStart: 0, lastProgress: 0 };
@@ -316,7 +339,7 @@ export class Host {
 
   private summary(r: RunResult) {
     const { trajectory, ...rest } = r;
-    return { ...rest, trajectory: { bodies: trajectory.bodies.length, joints: trajectory.joints.length, rate: trajectory.rate, samples: trajectory.samples }, warnings: r.warnings.slice() };
+    return { ...rest, trajectory: { bodies: trajectory.bodies.length, joints: trajectory.joints.length, rate: trajectory.rate, samples: trajectory.samples, camera: !!trajectory.camera }, warnings: r.warnings.slice() };
   }
 
   private resultOf(runId: string) {
@@ -397,6 +420,7 @@ export class Host {
       const re = new RecordedEngine(rec.trajectory, compiled.timestep);
       re.load(compiled);
       this.replay = { runId, engine: re, poses: new Float32Array(rec.trajectory.bodies.length * 7), playing: false, speed: 1, wallStart: 0, simStart: 0 };
+      this.attached = true;
       renderer.clearTrail();
     }
     const rp = this.replay;
@@ -420,12 +444,15 @@ export class Host {
     if (!rp || !this.renderer) return;
     rp.engine.poses(rp.poses);
     this.renderer.setPoses(rp.engine.bodyNames(), rp.poses, true);
+    const cam = this.attached ? rp.engine.cameraAt() : null;
+    if (cam) this.renderer.setCamera(cam.pos, cam.look, cam.fov);
     this.renderer.render();
-    this.o.post({ [TAG]: 1, type: "state", playing: rp.playing, t: rp.engine.time(), runId: `replay:${rp.runId}`, speed: rp.speed });
+    this.o.post({ [TAG]: 1, type: "state", playing: rp.playing, t: rp.engine.time(), runId: `replay:${rp.runId}`, speed: rp.speed, scripted: !!cam });
   }
 
   private notifyState(): void {
-    this.o.post({ [TAG]: 1, type: "state", playing: this.playing, t: this.sim?.time ?? 0, runId: this.run?.spec.runId ?? null, speed: this.speed });
+    const scripted = !!(this.run && this.run.sim.cameraScripted && this.attached);
+    this.o.post({ [TAG]: 1, type: "state", playing: this.playing, t: this.sim?.time ?? 0, runId: this.run?.spec.runId ?? null, speed: this.speed, scripted });
   }
 
   // ---------------------------------------------------------------- the frame loop
@@ -443,6 +470,7 @@ export class Host {
   input(ev: { type: string; dx?: number; dy?: number; deltaY?: number; buttons?: number; shift?: boolean }): void {
     const r = this.renderer;
     if (!r) return;
+    if (ev.type === "drag" || ev.type === "wheel" || ev.type === "fit") this.attached = false; // the viewer takes the view
     if (ev.type === "drag") {
       if (ev.buttons === 2 || ev.shift) r.pan(ev.dx ?? 0, ev.dy ?? 0);
       else r.rotate(ev.dx ?? 0, ev.dy ?? 0);
@@ -516,6 +544,10 @@ export class Host {
     if (this.replay && !this.run) { this.showReplayFrame(); return; }
     this.engine.poses(this.poseBuf);
     this.renderer.setPoses(this.engine.bodyNames(), this.poseBuf, !!this.run);
+    if (this.run && this.attached && this.run.sim.cameraScripted) {
+      const c = this.run.sim.cameraPose();
+      this.renderer.setCamera(c.pos, c.look, c.fov);
+    }
     this.renderer.render();
   }
 
@@ -578,7 +610,11 @@ export class Host {
     replay.load(compiled);
     const saved = this.poseBuf.slice();
     const savedOrbit = { ...renderer.orbit, target: renderer.orbit.target.clone() };
-    const cam = a.camera ?? { kind: "follow" };
+    const savedMode = renderer.mode;
+    const savedCam = renderer.cameraPose();
+    // a run whose program drove the camera is filmed through that camera unless the caller asks for another
+    const cam: CameraArgs = a.camera ?? (replay.hasCamera ? { kind: "scripted" } : { kind: "follow" });
+    if (cam.kind === "scripted" && !replay.hasCamera) throw new Error(`run "${runId}" has no scripted camera: its programs never called camera.*`);
     const followBody = cam.target ? this.bodyNameOf(cam.target) : compiled.bodies.find((b) => b.machine)?.name ?? null;
     const poses = new Float32Array(traj.bodies.length * 7);
     try {
@@ -587,7 +623,11 @@ export class Host {
         replay.seek(t);
         replay.poses(poses);
         renderer.setPoses(traj.bodies, poses);
-        if (cam.kind === "orbit") {
+        if (cam.kind === "scripted") {
+          const c = replay.cameraAt();
+          if (c) renderer.setCamera(c.pos, c.look, c.fov);
+        } else if (cam.kind === "orbit") {
+          renderer.mode = "orbit";
           renderer.orbit.follow = followBody;
           renderer.orbit.azimuth = (savedOrbit.azimuth ?? 0) + ((cam.turn ?? 20) * Math.PI / 180) * (i / fps);
           if (cam.distance) renderer.orbit.distance = cam.distance;
@@ -595,8 +635,10 @@ export class Host {
         } else if (cam.kind === "lookAt" && cam.eye && cam.lookAt) {
           renderer.lookAt(cam.eye, cam.lookAt);
         } else if (cam.kind === "fit") {
+          renderer.mode = "orbit";
           renderer.orbit.follow = null;
         } else {
+          renderer.mode = "orbit";
           renderer.orbit.follow = followBody;
           if (cam.distance) renderer.orbit.distance = cam.distance;
           if (cam.elevation !== undefined) renderer.orbit.elevation = (cam.elevation * Math.PI) / 180;
@@ -607,6 +649,8 @@ export class Host {
     } finally {
       Object.assign(renderer.orbit, savedOrbit);
       renderer.orbit.target.copy(savedOrbit.target);
+      renderer.mode = savedMode;
+      if (savedMode === "scripted") renderer.setCamera(savedCam.pos, savedCam.look, savedCam.fov);
       renderer.setPoses(engine.bodyNames(), saved);
       renderer.render();
     }
@@ -644,6 +688,19 @@ export class Host {
 
   private camera(a: CameraArgs & { rotate?: { dx: number; dy: number }; zoom?: number }) {
     const { renderer } = this.need();
+    if (a.kind === "scripted") {
+      // back on the program's camera: the live run's, the replay's, or the last recording's final shot
+      this.attached = true;
+      const live = this.run && this.run.sim.cameraScripted ? this.run.sim.cameraPose() : null;
+      const rec = !live && this.replay ? this.replay.engine.cameraAt() : null;
+      const last = !live && !rec ? [...this.results.values()].reverse().find((r) => r.trajectory.camera)?.trajectory : null;
+      const c = live ?? rec ?? (last?.camera ? { pos: [last.camera[last.camera.length - 7], last.camera[last.camera.length - 6], last.camera[last.camera.length - 5]] as XYZ, look: [last.camera[last.camera.length - 4], last.camera[last.camera.length - 3], last.camera[last.camera.length - 2]] as XYZ, fov: last.camera[last.camera.length - 1] } : null);
+      if (!c) throw new Error("no scripted camera to follow: no program has driven the camera here");
+      renderer.setCamera(c.pos, c.look, c.fov);
+      this.renderNow();
+      return { scripted: true, eye: c.pos.map(r4), lookAt: c.look.map(r4), fov: r4(c.fov) };
+    }
+    if (a.kind || a.rotate || a.zoom) this.attached = false;
     if (a.rotate) renderer.rotate(a.rotate.dx, a.rotate.dy);
     if (a.zoom) renderer.zoom(a.zoom);
     if (a.kind === "fit") renderer.fit();
@@ -654,7 +711,7 @@ export class Host {
     if (a.elevation !== undefined) renderer.orbit.elevation = (a.elevation * Math.PI) / 180;
     this.renderNow();
     const o = renderer.orbit;
-    return { target: [o.target.x, o.target.y, o.target.z].map(r4), distance: r4(o.distance), azimuth: r4(o.azimuth), elevation: r4(o.elevation), follow: o.follow };
+    return { target: [o.target.x, o.target.y, o.target.z].map(r4), distance: r4(o.distance), azimuth: r4(o.azimuth), elevation: r4(o.elevation), follow: o.follow, scripted: false };
   }
 
   private describeWorld(withMjcf: boolean) {

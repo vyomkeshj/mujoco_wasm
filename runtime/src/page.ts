@@ -20,7 +20,10 @@ function send(msg: Reply | Notice): void {
 }
 
 const size = () => ({ width: Math.max(2, Math.floor(innerWidth)), height: Math.max(2, Math.floor(innerHeight)), dpr: Math.min(2, devicePixelRatio || 1) });
-const wasmUrl = new URL("./mujoco.wasm", import.meta.url).href;
+// A versioned build names its wasm in a meta tag (one 10 MB copy per MuJoCo version, shared by every runtime
+// version); the development build keeps it next to the page.
+const wasmMeta = document.querySelector('meta[name="runmachine-wasm"]')?.getAttribute("content");
+const wasmUrl = new URL(wasmMeta || "./mujoco.wasm", location.href).href;
 
 type Transport = {
   request: (req: Request) => void;

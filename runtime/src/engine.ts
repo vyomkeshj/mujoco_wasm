@@ -1,6 +1,7 @@
 // The engine seam: what the loop, programs, sensors, metrics and films talk to. MuJoCo is the first adapter;
 // RecordedEngine replays a trajectory (films, scrubbing, tests) through the same interface.
 import type { MainModule, MjData, MjModel, MjVFS } from "@mujoco/mujoco";
+import type { CameraPoseLane } from "./camera";
 import type { CompiledWorld, Quat, Trajectory, XYZ } from "./types";
 
 export interface LoadReport {
@@ -53,10 +54,14 @@ export interface Engine {
   applyForce(body: string, force: XYZ, point: XYZ): void;
   save(): Float64Array;
   restore(state: Float64Array): void;
+  /** Recompute positions from the state (after a step, body poses lag the integrated qpos by one step). */
+  forward?(): void;
   dispose(): void;
 }
 
 type Module = MainModule;
+/** The data arrays that make up the state a step carries forward. */
+const STATE_FIELDS = ["qpos", "qvel", "act", "qacc_warmstart", "ctrl", "qfrc_applied"] as const;
 let modulePromise: Promise<Module> | null = null;
 
 export interface MujocoOptions {
@@ -168,6 +173,10 @@ export class MujocoEngine implements Engine {
   step(n: number): void {
     const m = this.m(), d = this.d();
     for (let i = 0; i < n; i++) this.mj.mj_step(m, d);
+  }
+
+  forward(): void {
+    this.mj.mj_forward(this.m(), this.d());
   }
 
   time(): number {
@@ -294,17 +303,31 @@ export class MujocoEngine implements Engine {
     (this.d().qfrc_applied as Float64Array).fill(0);
   }
 
+  /** The integration state as copies of the data views: time, qpos, qvel, act, warm start, ctrl, applied forces.
+   *  (The bindings' mj_getState takes an output argument it never fills from JavaScript — runtime 6 found the
+   *  saved state all zeros — so the views are copied directly.) */
   save(): Float64Array {
-    const spec = this.mj.mjtState.mjSTATE_INTEGRATION.value;
-    const out = new Float64Array(this.mj.mj_stateSize(this.m(), spec));
-    this.mj.mj_getState(this.m(), this.d(), out, spec);
+    const d = this.d();
+    const parts = STATE_FIELDS.map((f) => d[f] as Float64Array);
+    const n = 1 + parts.reduce((s, a) => s + a.length, 0);
+    const out = new Float64Array(n);
+    out[0] = d.time;
+    let at = 1;
+    for (const a of parts) { out.set(a, at); at += a.length; }
     return out;
   }
 
   restore(state: Float64Array): void {
-    const spec = this.mj.mjtState.mjSTATE_INTEGRATION.value;
-    this.mj.mj_setState(this.m(), this.d(), Array.from(state), spec);
-    this.mj.mj_forward(this.m(), this.d());
+    const d = this.d();
+    let at = 1;
+    for (const f of STATE_FIELDS) {
+      const view = d[f] as Float64Array;
+      if (at + view.length > state.length) throw new Error("restore: the saved state is from another world");
+      view.set(state.subarray(at, at + view.length));
+      at += view.length;
+    }
+    d.time = state[0];
+    this.mj.mj_forward(this.m(), d);
   }
 
   dispose(): void {
@@ -400,6 +423,17 @@ export class RecordedEngine implements Engine {
     const base = this.sampleIndex() * this.traj.stride + 1 + this.traj.bodies.length * 7;
     out.set(this.traj.data.subarray(base, base + this.traj.joints.length));
   }
+  /** True when the recording carries a scripted camera lane. */
+  get hasCamera(): boolean {
+    return !!this.traj.camera && this.traj.camera.length >= 7;
+  }
+  /** The scripted camera at the current time (null without a lane). */
+  cameraAt(): CameraPoseLane | null {
+    const c = this.traj.camera;
+    if (!c || c.length < 7) return null;
+    const i = Math.min(this.sampleIndex(), c.length / 7 - 1) * 7;
+    return { pos: [c[i], c[i + 1], c[i + 2]], look: [c[i + 3], c[i + 4], c[i + 5]], fov: c[i + 6] };
+  }
   setCtrl(): void {
     /* a recording has no motors to drive */
   }
@@ -433,21 +467,39 @@ export class RecordedEngine implements Engine {
 
 // ------------------------------------------------------------------ trajectory bytes
 
+/**
+ * Bytes: a little-endian u32 header length, the JSON header, the Float32 samples. Version 1 is the poses alone;
+ * version 2 (runtime 6) appends the scripted camera lane — `camera: <floats>` in the header says how many — and
+ * is written only when a lane exists, so a run without a camera program still produces version-1 bytes.
+ */
 export function encodeTrajectory(t: Trajectory): Uint8Array {
-  const header = new TextEncoder().encode(JSON.stringify({ v: 1, bodies: t.bodies, joints: t.joints, rate: t.rate, stride: t.stride, samples: t.samples }));
-  const out = new Uint8Array(4 + header.length + t.data.byteLength);
+  const lane = t.camera && t.camera.length ? t.camera : null;
+  const head = lane
+    ? { v: 2, bodies: t.bodies, joints: t.joints, rate: t.rate, stride: t.stride, samples: t.samples, camera: lane.length }
+    : { v: 1, bodies: t.bodies, joints: t.joints, rate: t.rate, stride: t.stride, samples: t.samples };
+  const header = new TextEncoder().encode(JSON.stringify(head));
+  const out = new Uint8Array(4 + header.length + t.data.byteLength + (lane ? lane.byteLength : 0));
   new DataView(out.buffer).setUint32(0, header.length, true);
   out.set(header, 4);
   out.set(new Uint8Array(t.data.buffer, t.data.byteOffset, t.data.byteLength), 4 + header.length);
+  if (lane) out.set(new Uint8Array(lane.buffer, lane.byteOffset, lane.byteLength), 4 + header.length + t.data.byteLength);
   return out;
 }
 
 export function decodeTrajectory(bytes: Uint8Array): Trajectory {
   const n = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
-  const h = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + n))) as { v: number; bodies: string[]; joints: string[]; rate: number; stride: number; samples: number };
-  if (h.v !== 1) throw new Error(`unknown trajectory version ${h.v}`);
-  const body = bytes.subarray(4 + n);
+  const h = JSON.parse(new TextDecoder().decode(bytes.subarray(4, 4 + n))) as { v: number; bodies: string[]; joints: string[]; rate: number; stride: number; samples: number; camera?: number };
+  if (h.v !== 1 && h.v !== 2) throw new Error(`unknown trajectory version ${h.v}`);
+  const dataBytes = h.stride * h.samples * 4;
+  const body = bytes.subarray(4 + n, 4 + n + dataBytes);
   const data = new Float32Array(body.byteLength / 4);
   new Uint8Array(data.buffer).set(body);
-  return { bodies: h.bodies, joints: h.joints, rate: h.rate, stride: h.stride, samples: h.samples, data };
+  const out: Trajectory = { bodies: h.bodies, joints: h.joints, rate: h.rate, stride: h.stride, samples: h.samples, data };
+  if (h.v === 2 && h.camera) {
+    const laneBytes = bytes.subarray(4 + n + dataBytes, 4 + n + dataBytes + h.camera * 4);
+    const camera = new Float32Array(laneBytes.byteLength / 4);
+    new Uint8Array(camera.buffer).set(laneBytes);
+    out.camera = camera;
+  }
+  return out;
 }

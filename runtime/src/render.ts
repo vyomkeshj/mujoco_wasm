@@ -36,6 +36,8 @@ export class Renderer {
   private trailN = 0;
   private trailBody: string | null = null;
   private trailLast = new THREE.Vector3(Infinity, Infinity, Infinity);
+  /** "orbit": the viewer's own camera (the orbit state); "scripted": a pose a program handed over this frame */
+  mode: "orbit" | "scripted" = "orbit";
 
   constructor(canvas: HTMLCanvasElement | OffscreenCanvas, width: number, height: number, dpr = 1) {
     this.renderer = new THREE.WebGLRenderer({ canvas: canvas as HTMLCanvasElement, antialias: true, preserveDrawingBuffer: true });
@@ -258,6 +260,7 @@ export class Renderer {
     const r = Math.max(0.02, box.getSize(new THREE.Vector3()).length() / 2);
     const d = (r * 2.4) / Math.min(1, this.camera.aspect || 1);
     const o = this.orbit;
+    this.mode = "orbit";
     o.follow = null;
     o.target.copy(c);
     o.distance = d;
@@ -275,7 +278,36 @@ export class Renderer {
 
   // ---------------------------------------------------------------- the viewport camera
 
+  /** A scripted pose (metres, degrees): the camera goes exactly there until `grab()` or `release()`. */
+  setCamera(pos: XYZ, look: XYZ, fov?: number): void {
+    this.mode = "scripted";
+    this.camera.position.set(pos[0], pos[1], pos[2]);
+    this.camera.lookAt(look[0], look[1], look[2]);
+    if (fov && Math.abs(fov - this.camera.fov) > 1e-6) {
+      this.camera.fov = fov;
+      this.camera.updateProjectionMatrix();
+    }
+    this.sun.target.position.set(look[0], look[1], look[2]);
+    this.sun.position.set(look[0] + 1.5, look[1] - 2, look[2] + 3);
+  }
+
+  /** The viewer takes the camera back: the orbit state picks up exactly where the scripted camera was. */
+  grab(): void {
+    if (this.mode !== "scripted") return;
+    const eye = this.camera.position;
+    const t = this.sun.target.position;
+    this.mode = "orbit";
+    this.lookAt([eye.x, eye.y, eye.z], [t.x, t.y, t.z]);
+  }
+
+  /** The camera's current pose, whichever mode owns it. */
+  cameraPose(): { pos: XYZ; look: XYZ; fov: number } {
+    const e = this.camera.position, t = this.mode === "scripted" ? this.sun.target.position : this.orbit.target;
+    return { pos: [e.x, e.y, e.z], look: [t.x, t.y, t.z], fov: this.camera.fov };
+  }
+
   applyOrbit(snap = false): void {
+    if (this.mode === "scripted") return;
     const o = this.orbit;
     if (o.follow) {
       const p = this.groups.get(o.follow)?.position;
@@ -289,12 +321,14 @@ export class Renderer {
   }
 
   rotate(dx: number, dy: number): void {
+    this.grab();
     this.orbit.azimuth -= dx * 0.006;
     this.orbit.elevation = Math.max(-1.45, Math.min(1.5, this.orbit.elevation + dy * 0.006));
     this.applyOrbit();
   }
 
   pan(dx: number, dy: number): void {
+    this.grab();
     const o = this.orbit;
     const right = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 0);
     const up = new THREE.Vector3().setFromMatrixColumn(this.camera.matrix, 1);
@@ -305,11 +339,13 @@ export class Renderer {
   }
 
   zoom(deltaY: number): void {
+    this.grab();
     this.orbit.distance = Math.max(0.02, Math.min(100, this.orbit.distance * Math.exp(deltaY * 0.0012)));
     this.applyOrbit();
   }
 
   lookAt(eye: XYZ, target: XYZ): void {
+    this.mode = "orbit";
     const o = this.orbit;
     o.follow = null;
     o.target.set(target[0], target[1], target[2]);
@@ -321,6 +357,7 @@ export class Renderer {
   }
 
   fit(bounds?: THREE.Box3): void {
+    this.mode = "orbit";
     const box = bounds ?? this.sceneBounds();
     if (box.isEmpty()) return;
     const c = box.getCenter(new THREE.Vector3());
@@ -338,6 +375,7 @@ export class Renderer {
   }
 
   follow(body: string | null): void {
+    this.mode = "orbit";
     this.orbit.follow = body;
     this.applyOrbit(true);
   }

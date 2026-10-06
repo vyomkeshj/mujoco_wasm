@@ -22,7 +22,7 @@ export type Notice =
   | { [TAG]: 1; type: "ready"; runtime: number; name: string; engines: string[]; caps: Caps }
   | { [TAG]: 1; type: "error"; error: string }
   | { [TAG]: 1; type: "progress"; runId: string; t: number; duration: number; rtf: number }
-  | { [TAG]: 1; type: "state"; playing: boolean; t: number; runId: string | null; speed: number }
+  | { [TAG]: 1; type: "state"; playing: boolean; t: number; runId: string | null; speed: number; scripted?: boolean }
   | { [TAG]: 1; type: "run-finished"; runId: string; status: string; reason?: string }
   | { [TAG]: 1; type: "picked"; ref: string | null; x: number; y: number }
   | { [TAG]: 1; type: "logs"; runId: string; lines: string[] }
@@ -68,7 +68,8 @@ export interface FilmArgs {
 }
 
 export interface CameraArgs {
-  kind?: "orbit" | "follow" | "lookAt" | "fit" | "preset";
+  /** scripted: the camera a program drove (a run's, a replay's, a film's) — runtime 6 */
+  kind?: "orbit" | "follow" | "lookAt" | "fit" | "preset" | "scripted";
   /** preset: a named view of the whole scene */
   view?: "top" | "front" | "side" | "iso";
   target?: string;

@@ -201,7 +201,7 @@ export interface Program {
   source: string;
   /** control rate, Hz (default 50) */
   rate?: number;
-  /** the machine this program drives (default: the first machine) */
+  /** the machine this program drives: a machine id, "*" for a world program (drives none, sees all); unset = the only machine */
   machine?: string;
 }
 
@@ -212,6 +212,8 @@ export interface RunSpec {
   duration: number;
   programs?: Program[];
   record?: { trajectoryRate?: number };
+  /** where the viewer's camera is when the run starts — the pose a scripted camera departs from */
+  camera?: { pos: XYZ; look: XYZ; fov: number };
 }
 
 export interface MetricResult {
@@ -234,6 +236,8 @@ export interface RunResult {
   logs: string[];
   trajectory: Trajectory;
   warnings: string[];
+  /** "scripted" when a program drove the camera (the trajectory then carries a camera lane) */
+  camera: "scripted" | "free";
 }
 
 /** Sampled poses of every body (and joint positions) over a run — what films and replays render. */
@@ -245,6 +249,8 @@ export interface Trajectory {
   stride: number;
   samples: number;
   data: Float32Array;
+  /** the scripted camera per sample: pos (3), look (3), fov (1) — present only when a program drove it */
+  camera?: Float32Array;
 }
 
 // ------------------------------------------------------------------ the compiled world (engine-neutral)

@@ -11,7 +11,8 @@
     "test": "node test_load.mjs",
     "build:runtime": "node runtime/build.mjs",
     "test:runtime": "node --test runtime/test/*.test.mjs",
-    "typecheck:runtime": "tsc -p runtime/tsconfig.json"
+    "typecheck:runtime": "tsc -p runtime/tsconfig.json",
+    "release:runtime": "node runtime/release.mjs"
   },
   "repository": {
     "type": "git",

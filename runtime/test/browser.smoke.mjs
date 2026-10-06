@@ -12,7 +12,10 @@ import { encodeStlBinary } from "../dist/core.mjs";
 const require = createRequire("/home/vk/IdeaProjects/kinetic/package.json");
 const puppeteer = require("puppeteer-core");
 const here = path.dirname(fileURLToPath(import.meta.url));
-const dist = path.join(here, "..", "dist");
+// SMOKE_ROOT serves another tree (the repo, to drive a published runtime/versions/<N>/ with its shared wasm);
+// SMOKE_PAGE is the page's path under it.
+const dist = process.env.SMOKE_ROOT ? path.resolve(process.env.SMOKE_ROOT) : path.join(here, "..", "dist");
+const pagePath = process.env.SMOKE_PAGE ?? "/index.html";
 const outDir = process.env.SMOKE_OUT ?? path.join(here, "..", "..", "..", "smoke-out");
 fs.mkdirSync(outDir, { recursive: true });
 
@@ -46,7 +49,7 @@ await page.evaluateOnNewDocument(() => {
   window.addEventListener("message", (ev) => { if (ev.data && ev.data.esoulRunMachine === 1) window.__msgs.push(ev.data); });
 });
 const t0 = Date.now();
-await page.goto(`${origin}/index.html?parent=${encodeURIComponent(origin)}`, { waitUntil: "load" });
+await page.goto(`${origin}${pagePath}?parent=${encodeURIComponent(origin)}`, { waitUntil: "load" });
 await page.waitForFunction(() => window.__msgs.some((m) => m.type === "ready" || m.type === "error"), { timeout: 90_000 });
 const ready = await page.evaluate(() => window.__msgs.find((m) => m.type === "ready" || m.type === "error"));
 console.log(`ready in ${Date.now() - t0} ms:`, JSON.stringify(ready));
@@ -95,6 +98,25 @@ if (film) {
   fs.writeFileSync(path.join(outDir, "run.webm"), webm.bytes);
   console.log(`film: ${webm.bytes.length} B → ${path.join(outDir, "run.webm")}`);
 }
+// runtime 6: a program drives the camera; the film is shot through it; settle answers a resting placement
+const scripted = await call("run", { runId: "smoke-cam", duration: 2.5, seed: 1, realtime: false, programs: [{ id: "cam", source: `function loop({ machine, camera, t }) { machine.motor("drive").speed(30); machine.motor("steer").angle(t > 1 ? -50 : 0); camera.follow("car", { distance: 0.8, height: 0.4, azimuthDeg: 25 }); if (t > 2) camera.fov(55); }` }], film: { quality: "draft" } }, 180_000);
+console.log(`scripted run ${scripted.ms} ms: status ${scripted.result.status} ${scripted.result.reason ?? ""} camera ${scripted.result.camera} lane ${scripted.result.trajectory.camera}`);
+if (scripted.result.camera !== "scripted" || scripted.result.trajectory.camera !== true) throw new Error("the run did not record a scripted camera");
+const scriptedFilm = scripted.result.outputs.find((o) => o.kind === "film");
+if (!scriptedFilm) throw new Error(`no film of the scripted run: ${JSON.stringify(scripted.result.warnings)}`);
+const sfilm = await readOutput(scriptedFilm.id);
+fs.writeFileSync(path.join(outDir, "scripted.webm"), sfilm.bytes);
+console.log(`scripted film: ${sfilm.bytes.length} B → ${path.join(outDir, "scripted.webm")}`);
+const reattach = await call("camera", { kind: "scripted" });
+console.log("camera scripted:", JSON.stringify(reattach.result));
+if (reattach.result.scripted !== true) throw new Error("camera {kind:scripted} did not re-attach");
+const settle = await call("settle", { machineId: "car", seconds: 0.5 });
+console.log("settle car:", JSON.stringify(settle.result));
+if (!settle.result.settled || Math.abs(settle.result.pose.pos[2]) > 0.01) throw new Error("the resting car should settle where it was placed");
+const snapScripted = await call("snapshot", { width: 640, height: 360, camera: { kind: "scripted" } });
+const pngS = await readOutput(snapScripted.result.id);
+fs.writeFileSync(path.join(outDir, "snapshot-scripted.png"), pngS.bytes);
+console.log(`scripted snapshot ${pngS.bytes.length} B`);
 const probe = await call("probe", { bodies: ["car.chassis"] });
 console.log("probe:", JSON.stringify(probe.result.bodies), "contacts", probe.result.contacts.length);
 const live = await call("run", { runId: "smoke-live", duration: 1, realtime: true, speed: 4, programs: [{ id: "p", source: `function loop({ machine }) { machine.motor("drive").speed(-20); }` }] }, 60_000);

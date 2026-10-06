@@ -60,6 +60,9 @@ export function quatZTo(dir: XYZ): Quat {
   return quatFromAxisAngle(axis, Math.acos(Math.max(-1, Math.min(1, c))));
 }
 
+/** The inverse rotation of a unit quaternion. */
+export const quatConj = (q: Quat): Quat => [q[0], -q[1], -q[2], -q[3]];
+
 export function quatNormalize(q: Quat): Quat {
   const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
   return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];

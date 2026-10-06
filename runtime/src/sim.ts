@@ -1,9 +1,10 @@
 // The simulation loop: control ticks over an engine, programs, sensors, metrics, the trajectory.
 // Host-agnostic — node tests, the worker and the headless page all drive it the same way.
+import { CameraDirector, type CameraPoseLane, type CameraScene } from "./camera";
 import type { CameraPose, Engine } from "./engine";
 import { MetricTracker } from "./metrics";
 import { compileProgram, findColor, seededRandom, type CameraImage, type ColorQuery, type ProgramHooks } from "./program";
-import type { CompiledSensor, CompiledWorld, Program, Quat, RunResult, RunSpec, Trajectory, XYZ } from "./types";
+import type { CompiledBody, CompiledSensor, CompiledWorld, Program, Quat, RunResult, RunSpec, Trajectory, XYZ } from "./types";
 import * as V from "./vec";
 
 export interface CameraRenderer {
@@ -24,8 +25,12 @@ const DEG = 180 / Math.PI;
 interface LoadedProgram {
   program: Program;
   hooks: ProgramHooks;
+  /** the machine the program drives; null for a world program; "?" when it did not say and there are several */
   machine: string | null;
 }
+
+const AMBIGUOUS = "?";
+const DEFAULT_CAMERA: CameraPoseLane = { pos: [1.2, -1.2, 0.7], look: [0, 0, 0.05], fov: 42 };
 
 class RunStopped extends Error {}
 
@@ -54,6 +59,10 @@ export class Simulation {
   private random: () => number = Math.random;
   private warnings: string[] = [];
   private contextCache = new Map<string, unknown>();
+  private director: CameraDirector;
+  private cameraSamples: Float32Array[] = [];
+  private shared: Record<string, unknown> = {};
+  private readonly radii = new Map<string, number>();
   readonly bodyNames: string[];
 
   constructor(readonly engine: Engine, readonly world: CompiledWorld, private readonly opts: SimOptions = {}) {
@@ -62,6 +71,42 @@ export class Simulation {
     this.poseBuf = new Float32Array(this.bodyNames.length * 7);
     this.prevPoses = new Float32Array(this.bodyNames.length * 7);
     this.qBuf = new Float32Array(engine.jointNames().length);
+    for (const b of world.bodies) this.radii.set(b.name, bodyRadius(b));
+    this.director = new CameraDirector(this.cameraScene(), DEFAULT_CAMERA);
+  }
+
+  /** What the camera director reads: positions and headings by the world's refs. */
+  private cameraScene(): CameraScene {
+    const sim = this;
+    return {
+      machineBodies(id) {
+        if (!sim.machineIds().includes(id)) return null;
+        const root = sim.rootBodyOf(id);
+        const rest = sim.world.bodies.filter((b) => b.machine === id && b.name !== root).map((b) => b.name);
+        return root ? [root, ...rest] : rest;
+      },
+      bodyOf(ref) { return sim.bodyName(ref); },
+      bodyPos(name) { return sim.engine.bodyPos(name); },
+      bodyQuat(name) { return sim.engine.bodyQuat(name); },
+      bodyRadius(name) { return sim.radii.get(name) ?? 0.02; },
+    };
+  }
+
+  /** A machine's root body: the one its free joint moves (the compiler lists bodies children-first). */
+  rootBodyOf(machine: string): string | null {
+    const free = this.world.joints.find((j) => j.machine === machine && j.type === "free");
+    if (free) return free.body;
+    const parts = this.world.bodies.filter((b) => b.machine === machine);
+    return parts.length ? parts[parts.length - 1].name : null;
+  }
+
+  /** The scripted camera's pose now (the viewer's start pose until a program moves it). */
+  cameraPose(): CameraPoseLane {
+    return this.director.pose();
+  }
+  /** True once a program has taken the camera in this run. */
+  get cameraScripted(): boolean {
+    return this.director.active;
   }
 
   // ---------------------------------------------------------------- lookups by the world's refs
@@ -101,11 +146,18 @@ export class Simulation {
     this.warnings = this.world.warnings.slice();
     this.contextCache.clear();
     this.random = seededRandom(spec.seed ?? 1);
+    this.shared = {};
+    this.cameraSamples = [];
+    this.director = new CameraDirector(this.cameraScene(), spec.camera ?? DEFAULT_CAMERA);
     this.tracker = new MetricTracker(this.world.metrics, (r) => this.bodyName(r), (r) => this.jointName(r));
     const machines = this.machineIds();
     this.programs = programs.map((p) => {
-      const machine = p.machine ?? machines[0] ?? null;
-      if (p.machine && !machines.includes(p.machine)) throw new Error(`program "${p.name ?? p.id}" drives machine "${p.machine}", which is not in the world (machines: ${machines.join(", ") || "none"})`);
+      let machine: string | null;
+      if (p.machine === "*") machine = null; // a world program: sees every machine, drives none by itself
+      else if (p.machine) {
+        if (!machines.includes(p.machine)) throw new Error(`program "${p.name ?? p.id}" drives machine "${p.machine}", which is not in the world (machines: ${machines.join(", ") || "none"})`);
+        machine = p.machine;
+      } else machine = machines.length === 1 ? machines[0] : machines.length > 1 ? AMBIGUOUS : null;
       return { program: p, hooks: compileProgram(p.source, p.name ?? p.id), machine };
     });
     this.engine.poses(this.prevPoses);
@@ -175,6 +227,12 @@ export class Simulation {
     const t = this.ticks * this.dt;
     this.engine.poses(this.poseBuf);
     this.tracker?.update(this.engine, t, this.dt);
+    try {
+      this.director.update(this.dt, t);
+    } catch (err) {
+      this.failure = `camera failed at ${t.toFixed(2)} s: ${(err as Error).message}`;
+      return false;
+    }
     if (this.ticks % this.sampleEvery === 0) this.sample();
     return !this.done;
   }
@@ -188,6 +246,8 @@ export class Simulation {
     this.engine.jointQ(this.qBuf);
     row.set(this.qBuf, 1 + nb * 7);
     this.samples.push(row);
+    const c = this.director.pose();
+    this.cameraSamples.push(Float32Array.of(c.pos[0], c.pos[1], c.pos[2], c.look[0], c.look[1], c.look[2], c.fov));
   }
 
   end(): RunResult {
@@ -198,6 +258,11 @@ export class Simulation {
     const data = new Float32Array(stride * this.samples.length);
     this.samples.forEach((row, i) => data.set(row, i * stride));
     const trajectory: Trajectory = { bodies: this.bodyNames.slice(), joints: this.engine.jointNames().slice(), rate: this.sampleRate, stride, samples: this.samples.length, data };
+    if (this.director.active) {
+      const cam = new Float32Array(7 * this.cameraSamples.length);
+      this.cameraSamples.forEach((row, i) => cam.set(row, i * 7));
+      trajectory.camera = cam;
+    }
     const logs = this.droppedLogs ? [...this.logs, `… ${this.droppedLogs} more lines not kept`] : this.logs.slice();
     const metrics = this.tracker ? this.tracker.results(this.engine, t) : {};
     const status = this.failure ? "failed" : this.stopReason !== null ? "stopped" : "finished";
@@ -213,6 +278,7 @@ export class Simulation {
       logs,
       trajectory,
       warnings: this.warnings.slice(),
+      camera: this.director.active ? "scripted" : "free",
     };
   }
 
@@ -389,12 +455,16 @@ export class Simulation {
         return sim.bodyHandle(`${id}.${name}`);
       },
       get position(): XYZ {
-        const root = parts[0];
-        return root ? eng.bodyPos(root.name) : [0, 0, 0];
+        const root = sim.rootBodyOf(id);
+        return root ? eng.bodyPos(root) : [0, 0, 0];
       },
       get velocity(): XYZ {
-        const root = parts[0];
-        return root ? sim.bodyVelocity(root.name) : [0, 0, 0];
+        const root = sim.rootBodyOf(id);
+        return root ? sim.bodyVelocity(root) : [0, 0, 0];
+      },
+      get quat(): Quat {
+        const root = sim.rootBodyOf(id);
+        return root ? eng.bodyQuat(root) : [1, 0, 0, 0];
       },
     };
   }
@@ -432,14 +502,21 @@ export class Simulation {
         if (typeof name !== "string" || !Number.isFinite(value)) throw new Error("metric(name, number)");
         sim.custom[name] = value;
       },
+      /** one plain object every program of the run shares — a blackboard, reset per run */
+      shared: this.shared,
     };
+    const name = lp.program.name ?? lp.program.id;
+    const machine = lp.machine === AMBIGUOUS
+      ? new Proxy({}, { get(_t, prop) { if (prop === "then" || typeof prop === "symbol") return undefined; throw new Error(`program "${name}" does not say which machine it drives (machines: ${Object.keys(machines).join(", ")}) — set machine, or use machines["${Object.keys(machines)[0]}"]`); } })
+      : lp.machine ? machines[lp.machine] : undefined;
     const ctx: Record<string, unknown> = {
       t: this.ticks * this.dt,
       dt: this.dt,
       tick: this.ticks,
-      machine: lp.machine ? machines[lp.machine] : undefined,
+      machine,
       machines,
       world,
+      camera: this.director.api(),
       log: (...a: unknown[]) => this.log(...a),
       random: () => this.random(),
       Math,
@@ -447,6 +524,22 @@ export class Simulation {
     this.contextCache.set(key, ctx);
     return ctx;
   }
+}
+
+/** A body's bounding radius from what it draws, metres — for framing shots. */
+function bodyRadius(b: CompiledBody): number {
+  let r = 0;
+  for (const g of b.geoms) {
+    if (g.kind === "mesh") {
+      const p = g.positions;
+      let m = 0;
+      for (let i = 0; i < p.length; i += 3) m = Math.max(m, p[i] * p[i] + p[i + 1] * p[i + 1] + p[i + 2] * p[i + 2]);
+      r = Math.max(r, Math.sqrt(m));
+    } else if (g.kind === "sphere") r = Math.max(r, V.len(g.pos) + g.size[0]);
+    else if (g.kind === "box") r = Math.max(r, V.len(g.pos) + V.len(g.size) / 2);
+    else if (g.kind === "cylinder" || g.kind === "capsule") r = Math.max(r, V.len(g.pos) + Math.hypot(g.size[0], g.size[1] / 2));
+  }
+  return r || 0.02;
 }
 
 function safeJson(v: unknown): string {

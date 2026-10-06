@@ -44,9 +44,18 @@ console.log("one-mesh load:", one.ok ? `ok bodies ${one.result.bodies.length}` :
 const load = await call("load", { world, meshes }, 40000).catch((e) => ({ ok: false, error: `TIMEOUT ${e.message}` }));
 console.log(`load (${Date.now() - t0} ms):`, load.ok ? `bodies ${load.result.bodies.length} warnings ${JSON.stringify(load.result.warnings)} bounds ${JSON.stringify(load.result.bounds)}` : `ERROR ${load.error}`);
 if (load.ok) {
-  const src = fs.readFileSync(path.join(here, "figure8.js"), "utf8");
-  const run = await call("run", { runId: "f8", duration: 12, seed: 1, realtime: false, programs: [{ id: "f8", source: src }] }, 240000);
-  console.log("run:", run.ok ? `${run.result.status} ${run.result.reason ?? ""} t=${run.result.time} ${Object.values(run.result.metrics).map((m) => m.text).join(" · ")} custom=${JSON.stringify(run.result.custom)} logs=${run.result.logs.join(" | ")}` : `ERROR ${run.error}`);
+  const src = fs.readFileSync(path.join(here, process.env.PROGRAM ?? "figure8.js"), "utf8");
+  const duration = Number(process.env.DURATION ?? 12);
+  const film = process.env.FILM ? { quality: process.env.FILM } : null;
+  const run = await call("run", { runId: "f8", duration, seed: 1, realtime: false, programs: [{ id: "f8", source: src }], film }, 600000);
+  console.log("run:", run.ok ? `${run.result.status} ${run.result.reason ?? ""} t=${run.result.time} camera=${run.result.camera} ${Object.values(run.result.metrics).map((m) => m.text).join(" · ")} custom=${JSON.stringify(run.result.custom)} logs=${run.result.logs.join(" | ")}` : `ERROR ${run.error}`);
+  const filmOut = run.ok && run.result.outputs.find((o) => o.kind === "film");
+  if (filmOut) {
+    const parts = []; let offset = 0;
+    for (;;) { const r = await call("read", { outputId: filmOut.id, offset, length: 1500000 }); parts.push(Buffer.from(r.result.base64, "base64")); offset += r.result.length; if (r.result.done) break; }
+    const out = path.join(here, "..", "..", "..", "smoke-out", "car-figure8.webm");
+    fs.writeFileSync(out, Buffer.concat(parts)); console.log(`film ${filmOut.bytes} B → ${out}`);
+  }
   const snap = await call("snapshot", { width: 960, height: 540, camera: { kind: "preset", view: "top" } });
   if (snap.ok) { const r = await call("read", { outputId: snap.result.id, offset: 0, length: 2000000 }); fs.writeFileSync(path.join(here, "..", "..", "..", "smoke-out", "car-top.png"), Buffer.from(r.result.base64, "base64")); console.log("snapshot saved"); }
 }
