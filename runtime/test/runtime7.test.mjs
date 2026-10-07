@@ -34,3 +34,17 @@ test("an open mesh falls back to its hull and says so", () => {
   assert.match(c.mjcf, /inertia="convex"/);
   assert.ok(c.warnings.some((w) => /not a closed solid/.test(w)), c.warnings.join("; "));
 });
+
+test("a hollow body is not fitted with a cylinder collider (it would reach parts the body never touches)", async () => {
+  const { cylinderMesh } = await import("../dist/core.mjs");
+  const cyl = cylinderMesh([0, 0, 20], 2, 10, 40);
+  const ok = compileWorld({ world: world(cyl), meshes: { s: cyl } });
+  assert.ok(!ok.warnings.some((w) => /fills only/.test(w)), ok.warnings.join("; "));
+  const o2 = boxMesh([-20, -20, 0], [20, 20, 80]), i2 = boxMesh([-18, -18, 2], [18, 18, 78]);
+  const f2 = new Float32Array(i2.length);
+  for (let t = 0; t < i2.length; t += 9) { f2.set(i2.subarray(t, t + 3), t); f2.set(i2.subarray(t + 6, t + 9), t + 3); f2.set(i2.subarray(t + 3, t + 6), t + 6); }
+  const tube = new Float32Array([...o2, ...f2]);
+  const w2 = world(tube); w2.machines[0].package.parts[0].bodies[0].collider = "cylinder";
+  const thin = compileWorld({ world: w2, meshes: { s: tube } });
+  assert.ok(thin.warnings.some((w) => /fills only/.test(w)), thin.warnings.join("; "));
+});

@@ -7944,12 +7944,22 @@ function fitPrimitive(kind, data, k, what, warnings) {
   for (let a = 0; a < 3; a++) {
     const u = (a + 1) % 3, v = (a + 2) % 3;
     if (near(ext[u], ext[v]) && !near(ext[a], ext[u])) {
+      const fill = data.volume / (Math.PI * (ext[u] / 2) ** 2 * ext[a]);
+      if (fill < 0.6) {
+        warnings.push(`${what}: fills only ${Math.round(fill * 100)}% of the cylinder around it (a cone, a cup or a shell) \u2014 using the convex hull`);
+        return null;
+      }
       const axis = [0, 0, 0];
       axis[a] = 1;
       return { kind, axis, radius: ext[u] / 2 * k, length: ext[a] * k, center: centre };
     }
   }
   if (near(ext[0], ext[1]) && near(ext[1], ext[2])) {
+    const fill = data.volume / (Math.PI * (ext[0] / 2) ** 2 * ext[2]);
+    if (fill < 0.6) {
+      warnings.push(`${what}: fills only ${Math.round(fill * 100)}% of the cylinder around it (a cone, a cup or a shell) \u2014 using the convex hull`);
+      return null;
+    }
     return { kind, axis: [0, 0, 1], radius: ext[0] / 2 * k, length: ext[2] * k, center: centre };
   }
   warnings.push(`${what}: no axis with a round cross-section for a ${kind} collider (extents ${ext.map((e) => e.toFixed(2)).join(" \xD7 ")}) \u2014 using the convex hull`);
