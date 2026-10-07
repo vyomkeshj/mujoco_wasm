@@ -10,6 +10,7 @@ npm run test:runtime       # node tests over dist/core.mjs
 npm run typecheck:runtime
 node runtime/test/browser.smoke.mjs                     # headless Chrome over dist/
 node runtime/release.mjs                                # publish dist/ as runtime/versions/<N>/ (committed)
+runtime/publish.sh                                      # ALL of it: build, test, release, push, deploy Pages, wait until live — use this
 SMOKE_ROOT=. SMOKE_PAGE=/runtime/versions/6/index.html node runtime/test/browser.smoke.mjs
 ```
 
