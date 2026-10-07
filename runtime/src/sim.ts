@@ -337,8 +337,9 @@ export class Simulation {
       get speed(): number { return V.len(self.bodyVelocity(name)); },
       get height(): number { return eng.bodyPos(name)[2]; },
       push(force: XYZ, point?: XYZ) { eng.applyForce(name, force, point ?? eng.bodyPos(name)); },
-      distanceTo(other: { position: XYZ } | XYZ): number {
-        const p = Array.isArray(other) ? other : other.position;
+      distanceTo(other: { position: XYZ } | XYZ | string): number {
+        // an id ("ball", "car.chassis") is what a program author writes first — accept it
+        const p = typeof other === "string" ? self.bodyHandle(other).position : Array.isArray(other) ? other : other.position;
         return V.len(V.sub(eng.bodyPos(name), p));
       },
     };

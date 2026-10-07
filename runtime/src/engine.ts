@@ -208,6 +208,11 @@ export class MujocoEngine implements Engine {
     return id;
   }
 
+  /** kg — the mass MuJoCo actually gives the body (after inertia="exact"/"convex" and any material mass). */
+  bodyMass(name: string): number {
+    return (this.m().body_mass as Float64Array)[this.bid(name)];
+  }
+
   bodyPos(name: string): XYZ {
     const b = this.bid(name);
     const xpos = this.d().xpos as Float64Array;

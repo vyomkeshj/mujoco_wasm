@@ -218,7 +218,11 @@ function compileObject(
       const local = transformPositions(data.positions, data.centroid, k);
       const file = `${name}.stl`;
       files.push({ name: file, bytes: encodeStlBinary(local) });
-      out.assets.push(`<mesh name="${esc(name)}" file="${esc(file)}"/>`);
+      // A closed shell weighs its own volume (inertia="exact"); MuJoCo's default weighs the convex hull, so a hollow
+      // shade weighed as a solid cone and tipped the machine its mass report said was stable.
+      const closed = isClosedMesh(data.positions);
+      if (!closed) warnings.push(`machine "${m.id}" part "${pl.part.id}" body "${body.name}": the mesh is not a closed solid — its mass and inertia come from its convex hull; give the part material.mass to be exact`);
+      out.assets.push(`<mesh name="${esc(name)}" file="${esc(file)}" inertia="${closed ? "exact" : "convex"}"/>`);
       bodyPos = V.add(pos, V.rotate(q, V.scale(data.centroid, k)));
       const col = s.collider ?? "hull";
       pushColliderGeoms(lines, geoms, col, { name, data, local, k, color, fr, massAttr, warnings, what: `object "${o.id}"` });
@@ -459,7 +463,11 @@ function compileMachine(
       const local = transformPositions(data.positions, pl.centroid, MM);
       const file = `${name}.stl`;
       files.push({ name: file, bytes: encodeStlBinary(local) });
-      out.assets.push(`<mesh name="${esc(name)}" file="${esc(file)}"/>`);
+      // A closed shell weighs its own volume (inertia="exact"); MuJoCo's default weighs the convex hull, so a hollow
+      // shade weighed as a solid cone and tipped the machine its mass report said was stable.
+      const closed = isClosedMesh(data.positions);
+      if (!closed) warnings.push(`machine "${m.id}" part "${pl.part.id}" body "${body.name}": the mesh is not a closed solid — its mass and inertia come from its convex hull; give the part material.mass to be exact`);
+      out.assets.push(`<mesh name="${esc(name)}" file="${esc(file)}" inertia="${closed ? "exact" : "convex"}"/>`);
       const share = pl.volume > 0 ? (data.volume > 0 ? data.volume : 1e-9) / pl.volume : 1 / pl.bodyMeshes.length;
       const massAttr = mat.mass !== undefined
         ? ` mass="${V.fmt(Math.max(MIN_MASS_KG * share, (mat.mass / 1000) * share))}"`
@@ -599,4 +607,21 @@ function emitPartSensor(s: Sensor, pl: PartPlan, mid: string, machineId: string,
 
 export function metricTargets(metrics: Metric[]): string[] {
   return metrics.map((m) => m.target);
+}
+
+/** Every edge shared by exactly two triangles (vertices welded on a 1e-4 grid) — a watertight shell. */
+export function isClosedMesh(positions: ArrayLike<number>): boolean {
+  const key = (i: number) => `${Math.round(positions[i] * 1e4)},${Math.round(positions[i + 1] * 1e4)},${Math.round(positions[i + 2] * 1e4)}`;
+  const edges = new Map<string, number>();
+  for (let t = 0; t + 8 < positions.length; t += 9) {
+    const v = [key(t), key(t + 3), key(t + 6)];
+    if (v[0] === v[1] || v[1] === v[2] || v[0] === v[2]) continue; // degenerate sliver
+    for (let e = 0; e < 3; e++) {
+      const a = v[e], b = v[(e + 1) % 3], k = a < b ? `${a}|${b}` : `${b}|${a}`;
+      edges.set(k, (edges.get(k) ?? 0) + 1);
+    }
+  }
+  if (edges.size === 0) return false;
+  for (const n of edges.values()) if (n !== 2) return false;
+  return true;
 }

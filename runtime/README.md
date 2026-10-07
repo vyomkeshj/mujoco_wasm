@@ -23,6 +23,7 @@ versioned page. `runtime/dist/` is the development build the Pages workflow also
 | runtime | what it added |
 |---|---|
 | 6 | scripted camera (`camera.*` in programs, camera lane in the trajectory, films through it), `settle`, programs name their machine, `world.shared`, versioned builds |
+| 7 | a closed mesh weighs its own volume (`inertia="exact"`; an open one falls back to its hull and warns), `engine.bodyMass`, `distanceTo("id")` |
 | 5 | mesh fetches through a pool of two with retries |
 | 4 | trail, replay (seek/play/pause), a watched camera as frames |
 | 3 | pick, select, presets, bounds, live logs |
