@@ -13,6 +13,11 @@ type Incoming =
 const scope = self as unknown as { postMessage: (m: unknown) => void; onmessage: ((e: MessageEvent<Incoming>) => void) | null };
 let host: Host | null = null;
 const queue: Request[] = [];
+// a resize or a visibility change that arrives while the engine is still loading is kept, not dropped:
+// the iframe is often laid out (or opened) during the ~10 MB wasm download, and a lost first resize left
+// the view rendering into a 2x2 canvas stretched to fill the frame (an empty grey gradient)
+let pendingSize: { width: number; height: number; dpr: number } | null = null;
+let pendingVisible: boolean | null = null;
 
 const post = (notice: Notice) => scope.postMessage({ kind: "notice", notice });
 
@@ -38,6 +43,9 @@ scope.onmessage = async (e: MessageEvent<Incoming>) => {
       try {
         await h.init();
         host = h;
+        if (pendingSize) h.resize(pendingSize.width, pendingSize.height, pendingSize.dpr);
+        if (pendingVisible !== null) h.setVisible(pendingVisible);
+        pendingSize = null; pendingVisible = null;
         for (const q of queue.splice(0)) void answer(q);
       } catch (err) {
         post({ [TAG]: 1, type: "error", error: errorText(err) });
@@ -51,10 +59,12 @@ scope.onmessage = async (e: MessageEvent<Incoming>) => {
       host?.input(m.ev);
       break;
     case "resize":
-      host?.resize(m.width, m.height, m.dpr);
+      if (host) host.resize(m.width, m.height, m.dpr);
+      else pendingSize = { width: m.width, height: m.height, dpr: m.dpr };
       break;
     case "visible":
-      host?.setVisible(m.visible);
+      if (host) host.setVisible(m.visible);
+      else pendingVisible = m.visible;
       break;
   }
 };

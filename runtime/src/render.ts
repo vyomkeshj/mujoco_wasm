@@ -252,10 +252,16 @@ export class Renderer {
     return null;
   }
 
+  /** The scene's bounds, or a 2 m box round the origin when there is nothing (or nothing finite) to frame. */
+  private frameBox(bounds?: THREE.Box3): THREE.Box3 {
+    const box = bounds ?? this.sceneBounds();
+    const ok = !box.isEmpty() && [box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].every(Number.isFinite);
+    return ok ? box : new THREE.Box3(new THREE.Vector3(-1, -1, 0), new THREE.Vector3(1, 1, 1));
+  }
+
   /** A named view of the whole scene. */
   preset(view: "top" | "front" | "side" | "iso"): void {
-    const box = this.sceneBounds();
-    if (box.isEmpty()) return;
+    const box = this.frameBox();
     const c = box.getCenter(new THREE.Vector3());
     const r = Math.max(0.02, box.getSize(new THREE.Vector3()).length() / 2);
     const d = (r * 2.4) / Math.min(1, this.camera.aspect || 1);
@@ -358,10 +364,13 @@ export class Renderer {
 
   fit(bounds?: THREE.Box3): void {
     this.mode = "orbit";
-    const box = bounds ?? this.sceneBounds();
-    if (box.isEmpty()) return;
+    const box = this.frameBox(bounds);
     const c = box.getCenter(new THREE.Vector3());
     const r = Math.max(0.02, box.getSize(new THREE.Vector3()).length() / 2);
+    // a fit is a way back from anywhere: drop a follow target and any angle that is not a number
+    this.orbit.follow = null;
+    if (!Number.isFinite(this.orbit.azimuth)) this.orbit.azimuth = -0.7;
+    if (!Number.isFinite(this.orbit.elevation)) this.orbit.elevation = 0.45;
     this.orbit.target.copy(c);
     // a portrait viewport sees less sideways: back off by the aspect so the whole scene stays in frame
     this.orbit.distance = (r * 2.4) / Math.min(1, this.camera.aspect || 1);

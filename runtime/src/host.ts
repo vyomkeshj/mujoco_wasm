@@ -61,12 +61,16 @@ export class Host {
   private world: World | null = null;
   /** the viewport follows a scripted camera (a run's or a replay's) until the viewer grabs the view */
   private attached = true;
+  /** the latest size asked for before the renderer existed (main-thread path) */
+  private pendingSize: { width: number; height: number; dpr: number } | null = null;
 
   constructor(private readonly o: HostOptions) {}
 
   async init(): Promise<void> {
     this.engine = await MujocoEngine.create({ wasmUrl: this.o.wasmUrl });
-    this.renderer = new Renderer(this.o.canvas, this.o.width, this.o.height, this.o.dpr);
+    const z = this.pendingSize ?? { width: this.o.width, height: this.o.height, dpr: this.o.dpr };
+    this.renderer = new Renderer(this.o.canvas, z.width, z.height, z.dpr);
+    this.pendingSize = null;
     this.renderer.render();
     this.o.post({ [TAG]: 1, type: "ready", runtime: RUNTIME_VERSION, name: RUNTIME_NAME, engines: [`mujoco@${this.engine.version}`], caps: { offscreen: typeof OffscreenCanvas !== "undefined", webcodecs: webcodecsAvailable(), worker: this.o.inWorker } });
     this.schedule();
@@ -463,7 +467,8 @@ export class Host {
   }
 
   resize(width: number, height: number, dpr: number): void {
-    this.renderer?.resize(width, height, dpr);
+    if (!this.renderer) { this.pendingSize = { width, height, dpr }; return; }
+    this.renderer.resize(width, height, dpr);
     this.renderNow();
   }
 

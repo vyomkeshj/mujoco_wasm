@@ -46,7 +46,7 @@ if (useWorker) {
     const m = e.data;
     if (m.kind === "reply") send(m.reply);
     else {
-      if (m.notice.type === "ready") setStatus("");
+      if (m.notice.type === "ready") { setStatus(""); transport.resize(); }
       if (m.notice.type === "error") setStatus(`the physics engine failed to start: ${m.notice.error}`);
       send(m.notice);
     }
@@ -65,7 +65,7 @@ if (useWorker) {
   const s = size();
   canvas.width = s.width * s.dpr;
   canvas.height = s.height * s.dpr;
-  const host = new Host({ canvas, wasmUrl, ...s, post: (n) => { if (n.type === "ready") setStatus(""); send(n); }, inWorker: false });
+  const host = new Host({ canvas, wasmUrl, ...s, post: (n) => { if (n.type === "ready") { setStatus(""); queueMicrotask(() => transport.resize()); } send(n); }, inWorker: false });
   const ready = host.init().catch((err: unknown) => {
     setStatus(`the physics engine failed to start: ${errorText(err)}`);
     send({ [TAG]: 1, type: "error", error: errorText(err) });
@@ -124,4 +124,12 @@ canvas.addEventListener("touchmove", (e) => {
 }, { passive: true });
 
 window.addEventListener("resize", () => transport.resize());
+// the iframe can change size without the window firing resize (a panel opening, a layout settling): watch it
+if (typeof ResizeObserver !== "undefined") {
+  let last = "";
+  new ResizeObserver(() => {
+    const z = size(); const key = `${z.width}x${z.height}@${z.dpr}`;
+    if (key !== last) { last = key; transport.resize(); }
+  }).observe(document.documentElement);
+}
 document.addEventListener("visibilitychange", () => transport.visible(document.visibilityState === "visible"));
