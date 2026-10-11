@@ -10,7 +10,9 @@ npm run build:runtime
 npm run test:runtime
 node runtime/test/browser.smoke.mjs
 node runtime/release.mjs "$@"
-N=$(node -e "console.log(JSON.parse(require('fs').readFileSync('runtime/dist/version.json','utf8')).runtime)")
+# version.json names the runtime as "runmachine.<N>" (the same parse release.mjs uses); an empty N must stop here
+N=$(node -e "const m=/runmachine\.(\d+)/.exec(JSON.parse(require('fs').readFileSync('runtime/dist/version.json','utf8')).runtimeVersion||'');console.log(m?m[1]:'')")
+[ -n "$N" ] || { echo "runtime/dist/version.json names no runtime version" >&2; exit 1; }
 git add runtime/versions/"$N" runtime/README.md
 git diff --cached --quiet || git commit -m "runtime $N: published build"
 git push origin HEAD:main
